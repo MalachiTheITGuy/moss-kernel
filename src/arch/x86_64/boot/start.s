@@ -116,7 +116,8 @@ _start:
 .align 8
 gdt64:
     .quad 0 # Null
-    .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) # Code (exec/read, user=0, present, 64-bit)
+    .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) # Code (exec/read, kernel, present, 64-bit)
+    .quad (1 << 44) | (1 << 47)                           # Data (read/write, kernel, present)
 gdt64_ptr:
     .short . - gdt64 - 1
     .quad gdt64 - 0xffffffff80000000

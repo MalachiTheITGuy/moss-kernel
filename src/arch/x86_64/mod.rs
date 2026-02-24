@@ -34,6 +34,11 @@ use libkernel::arch::x86_64::memory::pg_tables::{PML4Table, PgTableArray};
 
 pub struct X86_64 {}
 
+/// User-mode code segment selector: GDT index 5, RPL 3 = (5 << 3) | 3
+const USER_CS: u64 = 0x2b;
+/// User-mode data/stack segment selector: GDT index 4, RPL 3 = (4 << 3) | 3
+const USER_SS: u64 = 0x23;
+
 impl crate::arch::Arch for X86_64 {
     type UserContext = ExceptionState;
     type PTraceGpRegs = X86_64PtraceGPRegs;
@@ -53,10 +58,10 @@ impl crate::arch::Arch for X86_64 {
             vector: 0,
             error_code: 0,
             rip: entry_point.value() as _,
-            cs: 0x2b, // User code
+            cs: USER_CS,
             rflags: 0x202, // IF
             rsp: stack_top.value() as _,
-            ss: 0x23, // User data
+            ss: USER_SS,
         }
     }
 

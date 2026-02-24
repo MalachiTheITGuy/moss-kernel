@@ -2,6 +2,7 @@
 use crate::arch::x86_64::memory::mmu::{
     page_mapper::PageOffsetPgTableMapper, setup_kern_addr_space,
 };
+use alloc::string::String;
 use alloc::vec::Vec;
 use crate::console::setup_console_logger;
 use crate::memory::{PageOffsetTranslator, INITAL_ALLOCATOR, PAGE_ALLOC};
