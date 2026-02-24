@@ -92,6 +92,18 @@ impl Arch for Aarch64 {
         }
     }
 
+    fn set_user_return_value(context: &mut Self::UserContext, val: usize) {
+        context.x[0] = val as _;
+    }
+
+    fn set_user_stack(context: &mut Self::UserContext, sp: VA) {
+        context.sp_el0 = sp.value() as _;
+    }
+
+    fn set_user_thread_area(context: &mut Self::UserContext, area: VA) {
+        context.tpid_el0 = area.value() as _;
+    }
+
     fn name() -> &'static str {
         "aarch64"
     }

@@ -42,6 +42,15 @@ pub trait Arch: CpuOps + VirtualMemory {
     /// execution at the specified `entry_point`.
     fn new_user_context(entry_point: VA, stack_top: VA) -> Self::UserContext;
 
+    /// Sets the return value of a system call in the user context.
+    fn set_user_return_value(context: &mut Self::UserContext, val: usize);
+
+    /// Sets the user-space stack pointer in the user context.
+    fn set_user_stack(context: &mut Self::UserContext, sp: VA);
+
+    /// Sets the thread-local storage (TLS) area in the user context.
+    fn set_user_thread_area(context: &mut Self::UserContext, area: VA);
+
     /// Switch the current CPU's context to `new`, setting `new` to be the next
     /// task to be executed.
     fn context_switch(new: Arc<Task>);
@@ -202,3 +211,9 @@ mod arm64;
 
 #[cfg(target_arch = "aarch64")]
 pub use self::arm64::Aarch64 as ArchImpl;
+
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
+#[cfg(target_arch = "x86_64")]
+pub use self::x86_64::X86_64 as ArchImpl;

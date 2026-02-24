@@ -52,6 +52,7 @@ use libkernel::{
 
 //pub mod bcm2835_aux;
 pub mod imx_lp;
+pub mod ns16550;
 pub mod pl011;
 
 /// A trait for low-level, hardware-specific UART drivers.
