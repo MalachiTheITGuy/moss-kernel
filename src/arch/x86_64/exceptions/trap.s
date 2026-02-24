@@ -97,4 +97,70 @@ EXCEPTION_ERR   exc_security, 30
 
 .global exc_syscall
 exc_syscall:
-    hlt
+    # x86_64 syscall handler
+    # Arguments: RAX = syscall nr, RDI, RSI, RDX, R10, R8, R9
+    # Return: RAX
+    # CPU has already pushed: RIP, CS, RFLAGS, RSP, SS
+    
+    # Save general purpose registers
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %r11
+    pushq %r10
+    pushq %r9
+    pushq %r8
+    pushq %rdi
+    pushq %rsi
+    pushq %rbp
+    pushq %rbx
+    pushq %rdx
+    pushq %rcx
+    # RAX is already on stack from pushq %rax below
+    
+    # Save RFLAGS using pushfq (push flags)
+    pushfq
+    popq %r11
+    
+    # Save original syscall number
+    movq %rax, %r15
+    
+    # Call the Rust syscall handler
+    # Arguments: rdi = syscall nr, rsi = arg1, rdx = arg2, r10 = arg3, r8 = arg4, r9 = arg5
+    movq %r15, %rdi  # syscall number
+    movq %rsi, %rsi  # arg1
+    movq %rdx, %rdx  # arg2
+    movq %r10, %r10  # arg3 (note: r10 not rcx!)
+    movq %r8, %r8    # arg4
+    movq %r9, %r9    # arg5
+    
+    callq x86_64_syscall_handler
+    
+    # Return value is in RAX
+    
+    # Restore registers in reverse order
+    popq %rcx
+    popq %rdx
+    popq %rbx
+    popq %rbp
+    popq %rsi
+    popq %rdi
+    popq %r8
+    popq %r9
+    popq %r10
+    popq %r11
+    popq %r12
+    popq %r13
+    popq %r14
+    popq %r15
+    
+    # Restore RFLAGS from saved value
+    pushq %r11
+    popfq
+    
+    # Skip the saved RIP and CS that CPU pushed
+    addq $16, %rsp
+    
+    # Return to userspace - CPU will pop RSP, SS, RFLAGS, RIP, CS
+    iretq

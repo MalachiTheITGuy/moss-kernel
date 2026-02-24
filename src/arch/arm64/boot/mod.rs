@@ -64,7 +64,7 @@ global_asm!(include_str!("start.s"));
 /// 0xffff_e000_0000_0000 - 0xffff_e000_0000_0800 | Exception Vector Table
 ///
 /// Returns the stack pointer in X0, which should be hen set by the boot asm.
-#[unsafe(no_mangle)]
+#[no_mangle]
 fn arch_init_stage1(
     dtb_ptr: TPA<u8>,
     image_start: PA,
@@ -93,7 +93,7 @@ fn arch_init_stage1(
     .unwrap_or_else(|_| park_cpu())
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 fn arch_init_stage2(frame: *mut ExceptionState) -> *mut ExceptionState {
     // Save the ID map addr for booting secondaries.
     save_idmap(PA::from_value(TTBR0_EL1.get_baddr() as _));
@@ -179,7 +179,7 @@ fn arch_init_secondary(ctx_frame: *mut ExceptionState) -> *mut ExceptionState {
     ctx_frame
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn park_cpu() -> ! {
     loop {
         asm::wfe();

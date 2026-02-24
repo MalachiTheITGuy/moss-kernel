@@ -1,3 +1,6 @@
+pub mod syscall;
+pub use syscall::x86_64_syscall_handler;
+
 use core::fmt::Display;
 use core::arch::global_asm;
 use x86_64::structures::idt::InterruptDescriptorTable;
@@ -63,7 +66,7 @@ unsafe extern "C" {
     fn exc_syscall();
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut ExceptionState {
     let state_ref = unsafe { state.as_mut().unwrap() };
     log::error!("x86_64 exception occurred:\n{}", state_ref);
@@ -141,6 +144,9 @@ pub fn exceptions_init() -> libkernel::error::Result<()> {
             .set_handler_addr(VirtAddr::new(exc_security as *const () as u64))
             .set_privilege_level(PrivilegeLevel::Ring0);
 
+        // TODO: Set up syscall MSR for x86_64 using inline assembly
+        // This requires proper handling of the syscall instruction
+        
         idt.load();
     }
 

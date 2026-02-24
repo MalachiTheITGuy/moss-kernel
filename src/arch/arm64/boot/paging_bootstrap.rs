@@ -157,7 +157,7 @@ fn do_paging_bootstrap(static_pages: PA, image_addr: PA, fdt_addr: PA) -> Result
     Ok(highmem_l0.to_untyped())
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn enable_mmu(idmap_l0: PA, highmem_l0: PA) {
     TTBR0_EL1.set_baddr(idmap_l0.value() as u64); // Identity mapping
 
@@ -196,7 +196,7 @@ pub extern "C" fn enable_mmu(idmap_l0: PA, highmem_l0: PA) {
     barrier::isb(barrier::SY);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn paging_bootstrap(static_pages: PA, image_phys_addr: PA, fdt_addr: PA) -> PA {
     let res = do_paging_bootstrap(static_pages, image_phys_addr, fdt_addr);
 

@@ -98,7 +98,7 @@ pub unsafe fn run_initcalls() {
 macro_rules! kernel_driver {
     ($init_func:expr) => {
         paste::paste! {
-            #[unsafe(no_mangle)]
+            #[no_mangle]
             #[unsafe(link_section = ".driver_inits")]
             #[used(linker)]
             static [<DRIVER_INIT_ $init_func>]: $crate::drivers::init::InitFunc = $init_func;

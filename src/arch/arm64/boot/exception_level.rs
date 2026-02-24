@@ -8,7 +8,7 @@ use core::arch::asm;
 /// First rust entry point, called from `boot.s`. This function takes us down to
 /// EL1. Also called by secondaries during secondary boot.
 #[inline(never)]
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn transition_to_el1(stack_addr: u64) {
     let ret_address = {
         let mut addr: u64;

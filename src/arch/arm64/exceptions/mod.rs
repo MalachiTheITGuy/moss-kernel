@@ -33,7 +33,7 @@ unsafe extern "C" {
     pub static __vectors_end: u8;
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub static EMERG_STACK_END: VA = VA::from_value(0xffff_c000_0000_0000);
 
 #[repr(C)]
@@ -85,27 +85,27 @@ pub fn default_handler(state: &ExceptionState) {
     panic!("Unhandled CPU exception.  Program state:\n{}", state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_sync_sp0(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_irq_sp0(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_fiq_sp0(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_serror_sp0(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_sync_spx(state: *mut ExceptionState) -> *const ExceptionState {
     let state = unsafe { state.as_mut().unwrap() };
 
@@ -123,7 +123,7 @@ extern "C" fn el1_sync_spx(state: *mut ExceptionState) -> *const ExceptionState 
     state as *const _
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_irq_spx(state: *mut ExceptionState) -> *const ExceptionState {
     match get_interrupt_root() {
         Some(ref im) => im.handle_interrupt(),
@@ -136,17 +136,17 @@ extern "C" fn el1_irq_spx(state: *mut ExceptionState) -> *const ExceptionState {
     state
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_fiq_spx(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el1_serror_spx(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el0_sync(state_ptr: *mut ExceptionState) -> *const ExceptionState {
     current_task().ctx.save_user_ctx(state_ptr);
 
@@ -176,7 +176,7 @@ extern "C" fn el0_sync(state_ptr: *mut ExceptionState) -> *const ExceptionState 
     state_ptr
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el0_irq(state: *mut ExceptionState) -> *mut ExceptionState {
     current_task().ctx.save_user_ctx(state);
 
@@ -193,12 +193,12 @@ extern "C" fn el0_irq(state: *mut ExceptionState) -> *mut ExceptionState {
     state
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el0_fiq(state: &mut ExceptionState) {
     default_handler(state);
 }
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 extern "C" fn el0_serror(state: &mut ExceptionState) {
     default_handler(state);
 }

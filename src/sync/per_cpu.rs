@@ -7,7 +7,7 @@ macro_rules! per_cpu_shared {
             libkernel::sync::per_cpu::PerCpu::new($initializer);
 
         paste::paste! {
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         #[unsafe(link_section = ".percpu")]
         #[used(linker)]
         static [<$name _PERCPU_INITIALIZER>]: &'static (
@@ -27,7 +27,7 @@ macro_rules! per_cpu_private {
         > = libkernel::sync::per_cpu::PerCpu::new(|| {core::cell::RefCell::new($initializer())});
 
         paste::paste! {
-        #[unsafe(no_mangle)]
+        #[no_mangle]
         #[unsafe(link_section = ".percpu")]
         #[used(linker)]
         static [<$name _PERCPU_INITIALIZER>]: &'static (
