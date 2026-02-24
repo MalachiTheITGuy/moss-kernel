@@ -1,71 +1,72 @@
 .section .text
+.code64
+
+# Use AT&T syntax explicitly
+.att_syntax prefix
 
 .macro PUSH_REGS
-    push %rax
-    push %rcx
-    push %rdx
-    push %rbx
-    push %rbp
-    push %rsi
-    push %rdi
-    push %r8
-    push %r9
-    push %r10
-    push %r11
-    push %r12
-    push %r13
-    push %r14
-    push %r15
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %r11
+    pushq %r10
+    pushq %r9
+    pushq %r8
+    pushq %rdi
+    pushq %rsi
+    pushq %rbp
+    pushq %rbx
+    pushq %rdx
+    pushq %rcx
+    pushq %rax
 .endm
 
 .macro POP_REGS
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-    pop %r11
-    pop %r10
-    pop %r9
-    pop %r8
-    pop %rdi
-    pop %rsi
-    pop %rbp
-    pop %rbx
-    pop %rdx
-    pop %rcx
-    pop %rax
+    popq %rax
+    popq %rcx
+    popq %rdx
+    popq %rbx
+    popq %rbp
+    popq %rsi
+    popq %rdi
+    popq %r8
+    popq %r9
+    popq %r10
+    popq %r11
+    popq %r12
+    popq %r13
+    popq %r14
+    popq %r15
 .endm
 
 # Common exception handler
 exception_common:
     PUSH_REGS
     
-    # Save GS/FS base would go here if we used it in ExceptionState
+    # Arg 1: *mut ExceptionState (RSP)
+    movq %rsp, %rdi
+    callq x86_64_exception_handler
     
-    mov %rsp, %rdi # Arg 1: *mut ExceptionState
-    call x86_64_exception_handler
-    
-    # x86_64_exception_handler might return a new stack pointer for context switch
-    mov %rax, %rsp
+    # Return value is the new stack pointer
+    movq %rax, %rsp
     
     POP_REGS
-    add $8, %rsp # Skip error code
+    addq $8, %rsp # Skip error code
     iretq
 
 # Exception entry points
 .macro EXCEPTION_ERR name, num
 .global \name
 \name:
-    # Error code already pushed by CPU
-    push $\num # Just to be sure we have the number? No, usually we push it if CPU doesn't.
-    # Wait, if CPU pushes error code, we don't push it.
+    # CPU already pushed error code
     jmp exception_common
 .endm
 
 .macro EXCEPTION_NOERR name, num
 .global \name
 \name:
-    push $0 # Dummy error code
+    pushq $0 # Dummy error code
     jmp exception_common
 .endm
 
@@ -96,8 +97,4 @@ EXCEPTION_ERR   exc_security, 30
 
 .global exc_syscall
 exc_syscall:
-    # Syscall uses 'syscall' instruction on x86_64, which jumps to LSTAR MSR.
-    # It doesn't push as much state as an interrupt.
-    # But for now, let's stub it or use an interrupt for early porting if easier.
-    # Linux uses 'int 0x80' for 32-bit and 'syscall' for 64-bit.
     hlt

@@ -1,12 +1,20 @@
-use multiboot2::BootInformation;
-use libkernel::memory::address::{PA, VA, TPA, TVA, IdentityTranslator};
-use libkernel::arch::x86_64::memory::pg_tables::{PML4Table, PgTableArray, map_range, MapAttributes, MappingContext, PageAllocator, PageTableMapper, PgTable};
+use crate::arch::x86_64::memory::mmu::{
+    page_mapper::PageOffsetPgTableMapper, setup_kern_addr_space,
+};
+use crate::memory::PageOffsetTranslator;
+use crate::INITAL_ALLOCATOR;
+use core::ptr;
 use libkernel::arch::x86_64::memory::pg_descriptors::MemoryType;
+use libkernel::arch::x86_64::memory::pg_tables::{
+    map_range, MapAttributes, MappingContext, PML4Table, PageAllocator, PageTableMapper, PgTable,
+    PgTableArray,
+};
+use libkernel::memory::address::{IdentityTranslator, PA, TPA, TVA, VA};
+use libkernel::memory::allocators::smalloc::Smalloc;
 use libkernel::memory::permissions::PtePermissions;
 use libkernel::memory::region::{PhysMemoryRegion, VirtMemoryRegion};
-use crate::arch::x86_64::memory::mmu::{setup_kern_addr_space, page_mapper::PageOffsetPgTableMapper};
-use crate::memory::PageOffsetTranslator;
-use core::ptr;
+use multiboot2::BootInformation;
+use multiboot2::MemoryMapTag;
 
 const STATIC_PAGE_COUNT: usize = 64;
 static mut BOOT_PAGES: [[u8; 4096]; STATIC_PAGE_COUNT] = [[0; 4096]; STATIC_PAGE_COUNT];
@@ -15,7 +23,9 @@ static mut BOOT_PAGES_ALLOCATED: usize = 0;
 struct BootPageAllocator;
 
 impl PageAllocator for BootPageAllocator {
-    fn allocate_page_table<T: PgTable>(&mut self) -> libkernel::error::Result<TPA<PgTableArray<T>>> {
+    fn allocate_page_table<T: PgTable>(
+        &mut self,
+    ) -> libkernel::error::Result<TPA<PgTableArray<T>>> {
         unsafe {
             if BOOT_PAGES_ALLOCATED >= STATIC_PAGE_COUNT {
                 panic!("Out of boot pages!");
@@ -23,7 +33,7 @@ impl PageAllocator for BootPageAllocator {
             let ptr = BOOT_PAGES[BOOT_PAGES_ALLOCATED].as_mut_ptr();
             BOOT_PAGES_ALLOCATED += 1;
             ptr::write_bytes(ptr, 0, 4096);
-            
+
             // We need the physical address of this static buffer.
             // Since it's in the kernel image, PA = VA - KERNEL_BASE.
             let va = ptr as usize;
@@ -33,13 +43,64 @@ impl PageAllocator for BootPageAllocator {
     }
 }
 
+struct SmallocPageAlloc {
+    smalloc: &'static mut Smalloc<PageOffsetTranslator>,
+}
+
+impl PageAllocator for SmallocPageAlloc {
+    fn allocate_page_table<T: PgTable>(
+        &mut self,
+    ) -> libkernel::error::Result<TPA<PgTableArray<T>>> {
+        let pa = self.smalloc.alloc(4096, 4096)?;
+        Ok(TPA::from_value(pa.value()))
+    }
+}
+
+pub fn setup_allocator(boot_info: &BootInformation) {
+    let mut smalloc = INITAL_ALLOCATOR.lock();
+    let smalloc = smalloc.as_mut().unwrap();
+
+    // Add memory regions from Multiboot2 memory map
+    let memory_map_tag = boot_info.memory_map_tag().unwrap();
+    for entry in memory_map_tag.memory_areas() {
+        if entry.typ == multiboot2::MemoryAreaType::Available {
+            smalloc.add_memory_region(PhysMemoryRegion::new(
+                PA::from_value(entry.start_address as usize),
+                entry.size as usize,
+            ));
+        }
+    }
+
+    // Reserve kernel image
+    let kernel_start = 0x100000;
+    let kernel_size = 2 * 1024 * 1024; // FIXME: get real size
+    smalloc.add_reservation(PhysMemoryRegion::new(
+        PA::from_value(kernel_start),
+        kernel_size,
+    ));
+
+    // Reserve modules (initrd)
+    if let Some(modules_tag) = boot_info.module_tags().next() {
+        let start = modules_tag.start_address();
+        let end = modules_tag.end_address();
+        smalloc.add_reservation(PhysMemoryRegion::new(
+            PA::from_value(start as usize),
+            (end - start) as usize,
+        ));
+    }
+
+    // Permit reallocs
+    smalloc.permit_reallocs();
+}
+
 pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image_end: usize) {
+    setup_allocator(boot_info);
     let mut allocator = BootPageAllocator;
     let mut mapper = PageOffsetPgTableMapper {}; // This might not work if linear map isn't set up yet!
-    
+
     // Wait, PageOffsetPgTableMapper uses PageOffsetTranslator which uses PAGE_OFFSET.
     // But currently we ONLY have identity mapping for 1st 2MiB and higher-half mapping for the same.
-    
+
     // During bootstrap, we should use Identity mapping for accessing page tables.
     struct IdentityPgTableMapper;
     impl PageTableMapper for IdentityPgTableMapper {
@@ -51,11 +112,14 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
             Ok(f(TVA::from_value(pa.value())))
         }
     }
-    
+
     let mut bootstrap_mapper = IdentityPgTableMapper;
 
     let pml4_pa = allocator.allocate_page_table::<PML4Table>().unwrap();
-    
+
+    let smalloc = INITAL_ALLOCATOR.lock().as_mut().unwrap();
+    let mut allocator = SmallocPageAlloc { smalloc };
+
     let mut ctx = MappingContext {
         allocator: &mut allocator,
         mapper: &mut bootstrap_mapper,
@@ -63,9 +127,9 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
 
     // 1. Map Kernel Image
     let kernel_start_pa = 0x100000; // 1MiB
-    // We should get this from symbols but for now...
+                                    // We should get this from symbols but for now...
     let kernel_size = 2 * 1024 * 1024; // 2MiB
-    
+
     map_range(
         pml4_pa,
         MapAttributes {
@@ -75,19 +139,24 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
             perms: PtePermissions::rwx(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 2. Setup Linear Map (first 1GiB for now)
     map_range(
         pml4_pa,
         MapAttributes {
-            phys: PhysMemoryRegion::new(PA::from_value(0), 1024 * 1024 * 1024),
-            virt: VirtMemoryRegion::new(VA::from_value(0xffff_8000_0000_0000), 1024 * 1024 * 1024),
+            phys: PhysMemoryRegion::new(PA::from_value(0), 4 * 1024 * 1024 * 1024),
+            virt: VirtMemoryRegion::new(
+                VA::from_value(0xffff_8000_0000_0000),
+                4 * 1024 * 1024 * 1024,
+            ),
             mem_type: MemoryType::Normal,
             perms: PtePermissions::rw(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 3. Identity map first 2MiB (to keep running)
     map_range(
@@ -99,14 +168,15 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
             perms: PtePermissions::rwx(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Load new CR3
     unsafe {
         core::arch::asm!("mov cr3, {}", in(reg) pml4_pa.value());
     }
-    
+
     log::info!("New page tables loaded!");
-    
+
     setup_kern_addr_space(pml4_pa).unwrap();
 }

@@ -6,3 +6,4 @@ runner = "scripts/qemu-runner.sh"
 
 [target.x86_64-unknown-none]
 runner = "scripts/qemu-runner-x86_64.sh"
+rustflags = ["-C", "relocation-model=static"]

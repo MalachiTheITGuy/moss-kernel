@@ -46,10 +46,17 @@ _start:
     mov %eax, (%edi)
     mov %eax, 4080(%edi) # 510 * 8
 
-    # PD[0] -> 0 (2MiB huge page)
+    # Map first 1GiB using 512 x 2MiB huge pages in boot_pd
+    # This covers kernel image + BSS + boot stack + multiboot info
     mov $(boot_pd - 0xffffffff80000000), %edi
-    mov $0x00000083, %eax # Present + Writable + Huge
+    mov $0x00000083, %eax  # Present + Writable + Huge (2MiB)
+    mov $512, %ecx          # 512 entries = 1GiB
+.fill_pd:
     mov %eax, (%edi)
+    add $0x200000, %eax     # Next 2MiB physical page
+    add $8, %edi            # Next PD entry
+    dec %ecx
+    jnz .fill_pd
 
     # Load CR3
     mov $(boot_pml4 - 0xffffffff80000000), %eax

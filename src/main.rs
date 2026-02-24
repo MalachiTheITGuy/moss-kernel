@@ -19,7 +19,6 @@ use arch::{Arch, ArchImpl};
 use core::panic::PanicInfo;
 use drivers::{fdt_prober::get_fdt, fs::register_fs_drivers};
 use fs::VFS;
-use getargs::{Opt, Options};
 use libkernel::{
     CpuOps, VirtualMemory,
     fs::{
@@ -198,29 +197,56 @@ fn parse_args(args: &str) -> KOptions {
         init_args: Vec::new(),
     };
 
-    let mut opts = Options::new(args.split(" "));
+    let mut iter = args.split_whitespace().peekable();
+    while let Some(token) = iter.next() {
+        if !token.starts_with("--") {
+            continue;
+        }
 
-    loop {
-        match opts.next_opt() {
-            Ok(Some(arg)) => match arg {
-                Opt::Long("init") => kopts.init = Some(PathBuf::from(opts.value().unwrap())),
-                Opt::Long("init-arg") => kopts.init_args.push(opts.value().unwrap().to_string()),
-                Opt::Long("rootfs") => kopts.root_fs = Some(opts.value().unwrap().to_string()),
-                Opt::Long("automount") => {
-                    let string = opts.value().unwrap();
-                    let mut split = string.split(",");
-                    let path = split.next().unwrap();
-                    let fs = split.next().unwrap();
-
-                    kopts.automounts.push((PathBuf::from(path), fs.to_string()));
+        // support `--key=value` or `--key value`
+        let mut parts = token[2..].splitn(2, '=');
+        let key = parts.next().unwrap();
+        let value = parts.next().map(|s| s.to_string()).or_else(|| {
+            // try to get next token as value if it doesn't start with `--`
+            if let Some(next) = iter.peek() {
+                if !next.starts_with("--") {
+                    return Some(iter.next().unwrap().to_string());
                 }
-                Opt::Long(x) => warn!("Unknown option {x}"),
-                Opt::Short(x) => warn!("Unknown option {x}"),
-            },
-            Ok(None) => return kopts,
-            Err(e) => error!("Could not parse option: {e}, ignoring."),
+            }
+            None
+        });
+
+        match key {
+            "init" => {
+                if let Some(v) = value {
+                    kopts.init = Some(PathBuf::from(v));
+                }
+            }
+            "init-arg" => {
+                if let Some(v) = value {
+                    kopts.init_args.push(v);
+                }
+            }
+            "rootfs" => {
+                if let Some(v) = value {
+                    kopts.root_fs = Some(v);
+                }
+            }
+            "automount" => {
+                if let Some(v) = value {
+                    let mut split = v.split(',');
+                    if let (Some(path), Some(fs)) = (split.next(), split.next()) {
+                        kopts.automounts.push((PathBuf::from(path), fs.to_string()));
+                    }
+                }
+            }
+            other => {
+                warn!("Unknown option {}", other);
+            }
         }
     }
+
+    kopts
 }
 
 pub fn kmain(args: String, ctx_frame: *mut UserCtx) {

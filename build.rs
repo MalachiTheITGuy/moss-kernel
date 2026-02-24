@@ -16,6 +16,14 @@ fn main() {
     println!("cargo::rerun-if-changed={}", linker_script.display());
     println!("cargo::rustc-link-arg=-T{}", linker_script.display());
 
+    // Compile start.s for x86_64 using cc
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+        println!("cargo::rerun-if-changed=src/arch/x86_64/boot/start.s");
+        cc::Build::new()
+            .file("src/arch/x86_64/boot/start.s")
+            .compile("x86_64_boot");
+    }
+
     // Set an environment variable with the date and time of the build
     let now = OffsetDateTime::now_utc();
     let format = format_description!(
