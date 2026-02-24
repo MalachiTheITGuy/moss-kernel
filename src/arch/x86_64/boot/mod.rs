@@ -154,14 +154,26 @@ pub fn setup_gs_base() {
 }
 
 pub fn arch_init_stage2() {
+    // Early debug: write to serial port
+    unsafe {
+        // Write 'S' to serial port 0x3F8 (COM1)
+        let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'S');
+    }
+    
     // Get boot info
     let boot_info = BOOT_INFO.get().expect("Boot info not set");
+    
+    // Early debug: write '1'
+    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'1'); }
     
     // Initialize INITAL_ALLOCATOR from multiboot2 memory map
     log::info!("Initializing memory allocator from Multiboot2");
     {
         let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
         let alloc = alloc.as_mut().unwrap();
+        
+        // Early debug: write '2'
+        unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'2'); }
         
         // Add memory regions from Multiboot2 memory map
         if let Some(memory_map_tag) = boot_info.memory_map_tag() {
@@ -177,7 +189,7 @@ pub fn arch_init_stage2() {
         
         // Reserve kernel image
         let kernel_start = PA::from_value(0x100000);
-        let kernel_size = 0x200000; // 2MB - approximate
+        let kernel_size = 0x200000;
         let _ = alloc.add_reservation(PhysMemoryRegion::new(kernel_start, kernel_size));
         
         // Reserve modules (initrd) if present
@@ -192,22 +204,33 @@ pub fn arch_init_stage2() {
         unsafe { alloc.permit_region_list_reallocs(); }
     }
     
+    // Early debug: write '3'
+    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'3'); }
+    
     // Set up console logger
     log::info!("Setting up console logger");
     unsafe { setup_console_logger(); }
     
+    // Early debug: write '4'
+    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'4'); }
+    
     log::info!("Stage 2 init complete - calling kmain");
     
-    // Get cmdline - simplified approach
+    // Get cmdline
     let cmdline_str = boot_info.command_line_tag()
         .and_then(|tag| tag.cmdline().ok())
         .map(|cstr| alloc::string::String::from_utf8_lossy(cstr.as_bytes()).into_owned())
         .unwrap_or_default();
     
+    // Early debug: write '5'
+    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'5'); }
+    
     // Call kmain
     crate::kmain(cmdline_str, core::ptr::null_mut());
     
     // Should not return
+    // Early debug: write 'X' if we return
+    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'X'); }
     loop {
         X86_64::halt();
     }
