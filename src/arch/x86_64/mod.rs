@@ -66,7 +66,7 @@ impl crate::arch::Arch for X86_64 {
     }
 
     fn set_user_thread_area(_context: &mut Self::UserContext, _area: VA) {
-        // TODO: Handle FS_BASE/GS_BASE
+        // TODO: Handle FS_BASE/GS_BASE in Task
     }
 
     fn context_switch(new: Arc<Task>) {

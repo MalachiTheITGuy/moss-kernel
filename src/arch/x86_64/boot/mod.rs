@@ -121,6 +121,7 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
 // Storage for boot info across stages
 static BOOT_INFO: OnceLock<BootInformation> = OnceLock::new();
 
+#[unsafe(no_mangle)]
 pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _image_end: usize) -> ! {
     // Stage 1 must initialize its own minimal logging if needed,
     // but here we assume it was already set up or we'll set it up soon.

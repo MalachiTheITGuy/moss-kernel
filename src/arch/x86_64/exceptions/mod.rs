@@ -1,5 +1,4 @@
 pub mod syscall;
-pub use syscall::x86_64_syscall_handler;
 
 use core::fmt::Display;
 use core::arch::global_asm;
@@ -66,7 +65,7 @@ unsafe extern "C" {
     fn exc_syscall();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut ExceptionState {
     let state_ref = unsafe { state.as_mut().unwrap() };
     log::error!("x86_64 exception occurred:\n{}", state_ref);
