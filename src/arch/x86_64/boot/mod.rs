@@ -2,7 +2,10 @@
 use crate::arch::x86_64::memory::mmu::{
     page_mapper::PageOffsetPgTableMapper, setup_kern_addr_space,
 };
-use crate::memory::PageOffsetTranslator;
+use alloc::vec::Vec;
+use crate::console::setup_console_logger;
+use crate::memory::{PageOffsetTranslator, INITAL_ALLOCATOR, PAGE_ALLOC};
+use crate::sync::OnceLock;
 use core::ptr;
 use libkernel::arch::x86_64::memory::pg_descriptors::MemoryType;
 use libkernel::arch::x86_64::memory::pg_tables::{
@@ -10,11 +13,14 @@ use libkernel::arch::x86_64::memory::pg_tables::{
     PgTableArray,
 };
 use libkernel::memory::address::{PA, TPA, TVA, VA};
+use libkernel::memory::allocators::phys::FrameAllocator;
+use libkernel::memory::allocators::slab::allocator::SlabAllocator;
 use libkernel::memory::permissions::PtePermissions;
 use libkernel::memory::region::{PhysMemoryRegion, VirtMemoryRegion};
 use libkernel::{CpuOps, VirtualMemory};
 use multiboot2::BootInformation;
 use crate::arch::x86_64::X86_64;
+use crate::arch::x86_64::memory::heap::SLAB_ALLOC;
 
 const STATIC_PAGE_COUNT: usize = 64;
 static mut BOOT_PAGES: [[u8; 4096]; STATIC_PAGE_COUNT] = [[0; 4096]; STATIC_PAGE_COUNT];
@@ -41,7 +47,10 @@ impl PageAllocator for BootPageAllocator {
     }
 }
 
-pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image_end: usize) {
+pub fn bootstrap_memory(image_start: usize, image_end: usize) {
+    // Use the BootPageAllocator for bootstrap memory management
+    // This was set up in paging_bootstrap.rs
+    
     let mut allocator = BootPageAllocator;
     
     struct IdentityPgTableMapper;
@@ -54,7 +63,7 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
             Ok(f(TVA::from_value(pa.value())))
         }
     }
-
+    
     let pml4_pa = allocator.allocate_page_table::<PML4Table>().unwrap();
     let mut ctx = MappingContext {
         allocator: &mut allocator,
@@ -109,14 +118,20 @@ pub fn bootstrap_memory(boot_info: &BootInformation, _image_start: usize, _image
     setup_kern_addr_space(pml4_pa).unwrap();
 }
 
+// Storage for boot info across stages
+static BOOT_INFO: OnceLock<BootInformation> = OnceLock::new();
+
 #[unsafe(no_mangle)]
 pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _image_end: usize) -> ! {
     // Stage 1 must initialize its own minimal logging if needed,
     // but here we assume it was already set up or we'll set it up soon.
     
     let boot_info = unsafe { multiboot2::BootInformation::load(mb_info_ptr as *const _).expect("Failed to load Multiboot2 info") };
+    
+    // Store boot info for stage2
+    BOOT_INFO.set(boot_info).ok();
 
-    bootstrap_memory(&boot_info, _image_start, _image_end);
+    bootstrap_memory(_image_start, _image_end);
 
     log::info!("Setting up exceptions");
     crate::arch::x86_64::exceptions::exceptions_init().expect("Failed to init exceptions");
@@ -139,6 +154,61 @@ pub fn setup_gs_base() {
 }
 
 pub fn arch_init_stage2() {
-    log::info!("Stage 2 init complete");
-    // TODO: Call kmain
+    // Get boot info
+    let boot_info = BOOT_INFO.get().expect("Boot info not set");
+    
+    // Initialize INITAL_ALLOCATOR from multiboot2 memory map
+    log::info!("Initializing memory allocator from Multiboot2");
+    {
+        let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
+        let alloc = alloc.as_mut().unwrap();
+        
+        // Add memory regions from Multiboot2 memory map
+        if let Some(memory_map_tag) = boot_info.memory_map_tag() {
+            for entry in memory_map_tag.memory_areas() {
+                if entry.typ() == multiboot2::MemoryAreaType::Available {
+                    let start = PA::from_value(entry.start_address() as usize);
+                    let size = entry.size() as usize;
+                    log::info!("Adding memory region: {:x} - {:x}", entry.start_address(), entry.start_address() + entry.size());
+                    let _ = alloc.add_memory(PhysMemoryRegion::new(start, size));
+                }
+            }
+        }
+        
+        // Reserve kernel image
+        let kernel_start = PA::from_value(0x100000);
+        let kernel_size = 0x200000; // 2MB - approximate
+        let _ = alloc.add_reservation(PhysMemoryRegion::new(kernel_start, kernel_size));
+        
+        // Reserve modules (initrd) if present
+        for module in boot_info.module_tags() {
+            let start = PA::from_value(module.start_address() as usize);
+            let size = (module.end_address() - module.start_address()) as usize;
+            log::info!("Reserving module: {:x} - {:x}", module.start_address(), module.end_address());
+            let _ = alloc.add_reservation(PhysMemoryRegion::new(start, size));
+        }
+        
+        // Allow reallocations now
+        unsafe { alloc.permit_region_list_reallocs(); }
+    }
+    
+    // Set up console logger
+    log::info!("Setting up console logger");
+    unsafe { setup_console_logger(); }
+    
+    log::info!("Stage 2 init complete - calling kmain");
+    
+    // Get cmdline - simplified approach
+    let cmdline_str = boot_info.command_line_tag()
+        .and_then(|tag| tag.cmdline().ok())
+        .map(|cstr| alloc::string::String::from_utf8_lossy(cstr.as_bytes()).into_owned())
+        .unwrap_or_default();
+    
+    // Call kmain
+    crate::kmain(cmdline_str, core::ptr::null_mut());
+    
+    // Should not return
+    loop {
+        X86_64::halt();
+    }
 }
