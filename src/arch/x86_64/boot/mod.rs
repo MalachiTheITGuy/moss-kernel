@@ -80,6 +80,8 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
             phys: PhysMemoryRegion::new(PA::from_value(kernel_start_pa), kernel_size),
             virt: VirtMemoryRegion::new(VA::from_value(0xffffffff80100000), kernel_size),
             mem_type: MemoryType::Normal,
+            // TODO: W^X - split into separate rx (.text) and rw (.data/.bss) mappings
+            // using linker script symbols once section layout is finalized.
             perms: PtePermissions::rwx(false),
         },
         &mut ctx,
@@ -97,14 +99,14 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
         &mut ctx,
     ).unwrap();
 
-    // 3. Identity map first 2MiB
+    // 3. Identity map first 2MiB (to keep running during boot transition)
     map_range(
         pml4_pa,
         MapAttributes {
             phys: PhysMemoryRegion::new(PA::from_value(0), 2 * 1024 * 1024),
             virt: VirtMemoryRegion::new(VA::from_value(0), 2 * 1024 * 1024),
             mem_type: MemoryType::Normal,
-            perms: PtePermissions::rwx(false),
+            perms: PtePermissions::rx(false),
         },
         &mut ctx,
     ).unwrap();
