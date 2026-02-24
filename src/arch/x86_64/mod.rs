@@ -20,6 +20,7 @@ use crate::{
 pub mod boot;
 pub mod cpu_ops;
 pub mod exceptions;
+pub mod interrupts;
 pub mod memory;
 pub mod proc;
 pub mod ptrace;
@@ -27,6 +28,7 @@ pub mod ptrace;
 use self::exceptions::ExceptionState;
 use self::memory::mmu::{X86_64KernelAddressSpace, KERN_ADDR_SPC};
 use self::memory::address_space::X86_64ProcessAddressSpace;
+use self::memory::uaccess::{X86CopyFromUser, X86CopyToUser, X86CopyStrnFromUser, try_copy_from_user};
 use self::ptrace::X86_64PtraceGPRegs;
 use libkernel::arch::x86_64::memory::pg_tables::{PML4Table, PgTableArray};
 
@@ -48,6 +50,7 @@ impl crate::arch::Arch for X86_64 {
         ExceptionState {
             rax: 0, rcx: 0, rdx: 0, rbx: 0, rbp: 0, rsi: 0, rdi: 0,
             r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            vector: 0,
             error_code: 0,
             rip: entry_point.value() as _,
             cs: 0x2b, // User code
@@ -88,7 +91,7 @@ impl crate::arch::Arch for X86_64 {
     }
 
     fn get_cmdline() -> Option<String> {
-        None // TODO
+        self::boot::get_cmdline()
     }
 
     fn do_signal(
@@ -103,31 +106,31 @@ impl crate::arch::Arch for X86_64 {
     }
 
     unsafe fn copy_from_user(
-        _src: UA,
-        _dst: *mut (),
-        _len: usize,
+        src: UA,
+        dst: *mut (),
+        len: usize,
     ) -> impl Future<Output = Result<()>> {
-        async { Err(libkernel::error::KernelError::NotSupported) }
+        X86CopyFromUser::new(src, dst, len)
     }
 
-    unsafe fn try_copy_from_user(_src: UA, _dst: *mut (), _len: usize) -> Result<()> {
-        Err(libkernel::error::KernelError::NotSupported)
+    unsafe fn try_copy_from_user(src: UA, dst: *mut (), len: usize) -> Result<()> {
+        unsafe { try_copy_from_user(src, dst, len) }
     }
 
     unsafe fn copy_to_user(
-        _src: *const (),
-        _dst: UA,
-        _len: usize,
+        src: *const (),
+        dst: UA,
+        len: usize,
     ) -> impl Future<Output = Result<()>> {
-        async { Err(libkernel::error::KernelError::NotSupported) }
+        X86CopyToUser::new(src, dst, len)
     }
 
     unsafe fn copy_strn_from_user(
-        _src: UA,
-        _dst: *mut u8,
-        _len: usize,
+        src: UA,
+        dst: *mut u8,
+        len: usize,
     ) -> impl Future<Output = Result<usize>> {
-        async { Err(libkernel::error::KernelError::NotSupported) }
+        X86CopyStrnFromUser::new(src, dst, len)
     }
 }
 

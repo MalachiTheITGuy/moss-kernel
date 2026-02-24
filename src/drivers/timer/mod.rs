@@ -22,6 +22,10 @@ pub struct Instant {
 }
 
 impl Instant {
+    pub const fn new(ticks: u64, freq: u64) -> Self {
+        Self { ticks, freq }
+    }
+
     pub fn ticks(&self) -> u64 {
         self.ticks
     }
@@ -198,7 +202,7 @@ impl SysTimer {
         self.driver.now() - self.start_time
     }
 
-    fn from_driver(driver: Arc<dyn HwTimer>) -> Self {
+    pub fn from_driver(driver: Arc<dyn HwTimer>) -> Self {
         Self {
             start_time: driver.now(),
             driver,
@@ -304,6 +308,13 @@ pub fn schedule_preempt(when: Instant) {
     if let Some(timer) = SYS_TIMER.get() {
         timer.schedule_preempt(when);
     }
+}
+
+pub fn set_sys_timer(driver: Arc<dyn HwTimer>) {
+    SYS_TIMER
+        .set(Arc::new(SysTimer::from_driver(driver)))
+        .ok()
+        .expect("Failed to set SYS_TIMER");
 }
 
 static SYS_TIMER: OnceLock<Arc<SysTimer>> = OnceLock::new();

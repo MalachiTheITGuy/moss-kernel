@@ -11,6 +11,7 @@ pub struct ExceptionState {
     pub rax: u64, pub rcx: u64, pub rdx: u64, pub rbx: u64, pub rbp: u64,
     pub rsi: u64, pub rdi: u64, pub r8: u64, pub r9: u64, pub r10: u64,
     pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+    pub vector: u64,
     pub error_code: u64,
     pub rip: u64,
     pub cs: u64,
@@ -28,8 +29,8 @@ impl Display for ExceptionState {
         )?;
         write!(
             f,
-            "RIP: 0x{:016x} RSP: 0x{:016x} RFLAGS: 0x{:016x}\n",
-            self.rip, self.rsp, self.rflags
+            "RIP: 0x{:016x} RSP: 0x{:016x} RFLAGS: 0x{:016x} VEC: {}\n",
+            self.rip, self.rsp, self.rflags, self.vector
         )
     }
 }
@@ -63,15 +64,30 @@ unsafe extern "C" {
     fn exc_vmm_communication();
     fn exc_security();
     fn exc_syscall();
+    fn exc_timer();
+    fn exc_com1();
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut ExceptionState {
     let state_ref = unsafe { state.as_mut().unwrap() };
-    log::error!("x86_64 exception occurred:\n{}", state_ref);
+    
+    let vector = state_ref.vector;
+    
+    if vector >= 32 && vector < 255 {
+        if let Some(root) = crate::interrupts::get_interrupt_root() {
+            crate::arch::x86_64::interrupts::set_pending_vector(vector as u8);
+            root.handle_interrupt();
+        }
+        
+        // Signal EOI if it's an APIC interrupt
+        // For now, we'll just assume it's handled.
+    } else {
+        log::error!("x86_64 exception occurred:\n{}", state_ref);
 
-    if state_ref.cs & 0x3 == 0 {
-        panic!("Kernel exception");
+        if state_ref.cs & 0x3 == 0 {
+            panic!("Kernel exception");
+        }
     }
 
     state
@@ -141,6 +157,14 @@ pub fn exceptions_init() -> libkernel::error::Result<()> {
         
         idt.security_exception
             .set_handler_addr(VirtAddr::new(exc_security as *const () as u64))
+            .set_privilege_level(PrivilegeLevel::Ring0);
+
+        idt[0x20]
+            .set_handler_addr(VirtAddr::new(exc_timer as *const () as u64))
+            .set_privilege_level(PrivilegeLevel::Ring0);
+        
+        idt[0x24]
+            .set_handler_addr(VirtAddr::new(exc_com1 as *const () as u64))
             .set_privilege_level(PrivilegeLevel::Ring0);
 
         // TODO: Set up syscall MSR for x86_64 using inline assembly

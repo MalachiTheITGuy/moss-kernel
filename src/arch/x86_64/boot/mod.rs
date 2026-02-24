@@ -136,6 +136,9 @@ pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _ima
     log::info!("Setting up exceptions");
     crate::arch::x86_64::exceptions::exceptions_init().expect("Failed to init exceptions");
 
+    log::info!("Setting up interrupts");
+    crate::arch::x86_64::interrupts::init();
+
     log::info!("Enabling interrupts");
     X86_64::enable_interrupts();
 
@@ -165,6 +168,8 @@ pub fn arch_init_stage2() {
     
     // Early debug: write '1'
     unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'1'); }
+
+    setup_serial();
     
     // Initialize INITAL_ALLOCATOR from multiboot2 memory map
     log::info!("Initializing memory allocator from Multiboot2");
@@ -234,4 +239,36 @@ pub fn arch_init_stage2() {
     loop {
         X86_64::halt();
     }
+}
+
+pub fn get_cmdline() -> Option<String> {
+    BOOT_INFO.get()
+        .and_then(|info| info.command_line_tag())
+        .map(|tag| {
+            let s = tag.cmdline().unwrap_or_default();
+            String::from(s)
+        })
+}
+
+pub fn setup_serial() {
+    use crate::drivers::uart::ns16550::Ns16550;
+    use crate::drivers::uart::Uart;
+    use crate::interrupts::{get_interrupt_root, InterruptConfig, InterruptDescriptor, TriggerMode};
+
+    let mut uart_hw = Ns16550::new(0x3F8);
+    uart_hw.init();
+
+    let root = get_interrupt_root().expect("Interrupt root not initialized");
+    let uart = root.claim_interrupt(
+        InterruptConfig {
+            descriptor: InterruptDescriptor::Spi(4), // COM1 is usually IRQ 4
+            trigger: TriggerMode::EdgeRising,
+        },
+        |handle| Uart::new(uart_hw, handle, "com1"),
+    ).expect("Failed to claim UART interrupt");
+
+    crate::console::set_active_console(uart.clone(), libkernel::driver::CharDevDescriptor {
+        major: crate::drivers::ReservedMajors::Uart as _,
+        minor: 0,
+    }).expect("Failed to set active console");
 }

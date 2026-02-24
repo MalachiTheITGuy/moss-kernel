@@ -52,7 +52,7 @@ exception_common:
     movq %rax, %rsp
     
     POP_REGS
-    addq $8, %rsp # Skip error code
+    addq $16, %rsp # Skip vector and error code
     iretq
 
 # Exception entry points
@@ -60,6 +60,7 @@ exception_common:
 .global \name
 \name:
     # CPU already pushed error code
+    pushq $\num # Push vector
     jmp exception_common
 .endm
 
@@ -67,6 +68,7 @@ exception_common:
 .global \name
 \name:
     pushq $0 # Dummy error code
+    pushq $\num # Push vector
     jmp exception_common
 .endm
 
@@ -98,6 +100,7 @@ EXCEPTION_ERR   exc_security, 30
 .global exc_syscall
 exc_syscall:
     pushq $0 # Dummy error code
+    pushq $0x80 # Use 0x80 as vector for syscall (standard)
     PUSH_REGS
     
     movq %rsp, %rdi
@@ -106,5 +109,17 @@ exc_syscall:
     movq %rax, %rsp
     
     POP_REGS
-    addq $8, %rsp
+    addq $16, %rsp
     iretq
+
+# IRQ entry points
+.macro IRQ_ENTRY name, num
+.global \name
+\name:
+    pushq $0 # Dummy error code
+    pushq $\num
+    jmp exception_common
+.endm
+
+IRQ_ENTRY exc_timer, 0x20
+IRQ_ENTRY exc_com1, 0x24
