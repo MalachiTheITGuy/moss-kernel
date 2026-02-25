@@ -74,7 +74,7 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
     
     let vector = state_ref.vector;
     
-    if vector >= 32 && vector < 255 {
+    if vector >= 32 && vector <= 255 {
         if let Some(root) = crate::interrupts::get_interrupt_root() {
             crate::arch::x86_64::interrupts::set_pending_vector(vector as u8);
             root.handle_interrupt();
@@ -167,9 +167,11 @@ pub fn exceptions_init() -> libkernel::error::Result<()> {
             .set_handler_addr(VirtAddr::new(exc_com1 as *const () as u64))
             .set_privilege_level(PrivilegeLevel::Ring0);
 
-        // TODO: Set up syscall MSR for x86_64 using inline assembly
-        // This requires proper handling of the syscall instruction
-        
+        // Install int 0x80 as the syscall entry point (Ring3 callable)
+        idt[0x80]
+            .set_handler_addr(VirtAddr::new(exc_syscall as *const () as u64))
+            .set_privilege_level(PrivilegeLevel::Ring3);
+
         idt.load();
     }
 

@@ -190,8 +190,9 @@ async fn sys_arch_prctl(code: i32, _addr: u64) -> libkernel::error::Result<usize
     const ARCH_SET_FS: i32 = 0x1002;
     match code {
         ARCH_SET_FS | ARCH_SET_GS => {
-            // TODO: Handle FS_BASE/GS_BASE in Task state
-            Ok(0)
+            // TODO: Handle FS_BASE/GS_BASE in Task state and apply on context switch.
+            // Until implemented, report that this operation is not supported.
+            Err(KernelError::NotSupported)
         }
         _ => Err(KernelError::NotSupported),
     }

@@ -35,9 +35,9 @@ use libkernel::arch::x86_64::memory::pg_tables::{PML4Table, PgTableArray};
 pub struct X86_64 {}
 
 /// User code segment selector: GDT entry 5, RPL=3 (0x2b)
-const USER_CS: u64 = (5 << 3) | 3;
+pub(super) const USER_CS: u64 = (5 << 3) | 3;
 /// User data/stack segment selector: GDT entry 4, RPL=3 (0x23)
-const USER_SS: u64 = (4 << 3) | 3;
+pub(super) const USER_SS: u64 = (4 << 3) | 3;
 
 impl crate::arch::Arch for X86_64 {
     type UserContext = ExceptionState;

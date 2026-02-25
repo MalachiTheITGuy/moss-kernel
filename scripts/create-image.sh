@@ -70,7 +70,7 @@ case "$ARCH" in
 esac
 
 echo "Building usertest for $ARCH..."
-usertest_binary="$(cargo build --target "$cargo_target" --message-format=json 2>&1 | jq -r 'select(.reason == "compiler-artifact") | .filenames[]' | grep "usertest")"
+usertest_binary="$(cargo build --target "$cargo_target" --message-format=json | jq -r 'select(.reason == "compiler-artifact") | .filenames[]' | grep "usertest")"
 cp "$usertest_binary" "$base/build/rootfs/bin/usertest"
 
 # make image

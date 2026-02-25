@@ -153,92 +153,96 @@ pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _ima
     }
 }
 
+// Per-CPU storage: first qword holds the SlabCache pointer written by KernelHeap::init_for_this_cpu()
+static mut PER_CPU_STORAGE: [u8; 8] = [0u8; 8];
+
 pub fn setup_gs_base() {
+    let addr = unsafe { core::ptr::addr_of_mut!(PER_CPU_STORAGE) as u64 };
     unsafe {
-        core::arch::asm!("wrmsr", in("ecx") 0xC0000101u32, in("eax") 0u32, in("edx") 0u32);
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC0000101u32,  // IA32_GS_BASE
+            in("eax") (addr & 0xFFFFFFFF) as u32,
+            in("edx") (addr >> 32) as u32,
+        );
     }
 }
 
 pub fn arch_init_stage2() {
-    // Early debug: write to serial port
-    unsafe {
-        // Write 'S' to serial port 0x3F8 (COM1)
-        let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'S');
-    }
-    
-    // Get boot info
+    // Get boot info (stored from stage1)
     let boot_info = BOOT_INFO.get().expect("Boot info not set");
-    
-    // Early debug: write '1'
-    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'1'); }
 
-    setup_serial();
-    
     // Initialize INITAL_ALLOCATOR from multiboot2 memory map
-    log::info!("Initializing memory allocator from Multiboot2");
     {
         let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
         let alloc = alloc.as_mut().unwrap();
-        
-        // Early debug: write '2'
-        unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'2'); }
-        
-        // Add memory regions from Multiboot2 memory map
+
         if let Some(memory_map_tag) = boot_info.memory_map_tag() {
             for entry in memory_map_tag.memory_areas() {
                 if entry.typ() == multiboot2::MemoryAreaType::Available {
                     let start = PA::from_value(entry.start_address() as usize);
                     let size = entry.size() as usize;
-                    log::info!("Adding memory region: {:x} - {:x}", entry.start_address(), entry.start_address() + entry.size());
                     let _ = alloc.add_memory(PhysMemoryRegion::new(start, size));
                 }
             }
         }
-        
+
         // Reserve kernel image
-        let kernel_start = PA::from_value(0x100000);
-        let kernel_size = 0x200000;
-        let _ = alloc.add_reservation(PhysMemoryRegion::new(kernel_start, kernel_size));
-        
+        let _ = alloc.add_reservation(PhysMemoryRegion::new(
+            PA::from_value(0x100000),
+            0x200000,
+        ));
+
         // Reserve modules (initrd) if present
         for module in boot_info.module_tags() {
             let start = PA::from_value(module.start_address() as usize);
             let size = (module.end_address() - module.start_address()) as usize;
-            log::info!("Reserving module: {:x} - {:x}", module.start_address(), module.end_address());
             let _ = alloc.add_reservation(PhysMemoryRegion::new(start, size));
         }
-        
-        // Allow reallocations now
+
         unsafe { alloc.permit_region_list_reallocs(); }
     }
-    
-    // Early debug: write '3'
-    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'3'); }
-    
-    // Set up console logger
-    log::info!("Setting up console logger");
+
+    // Convert INITAL_ALLOCATOR to the full page/slab allocators, then init the per-CPU heap.
+    // This must happen before any code that allocates (e.g. setup_serial, setup_console_logger).
+    {
+        use crate::arch::x86_64::memory::heap::KernelHeap;
+
+        let smalloc = INITAL_ALLOCATOR
+            .lock_save_irq()
+            .take()
+            .expect("INITAL_ALLOCATOR should not have been taken yet");
+
+        let (page_alloc, frame_list) = unsafe { FrameAllocator::init(smalloc) };
+
+        if PAGE_ALLOC.set(page_alloc).is_err() {
+            panic!("Cannot setup physical memory allocator");
+        }
+
+        if SLAB_ALLOC.set(SlabAllocator::new(frame_list)).is_err() {
+            panic!("Cannot setup slab allocator");
+        }
+
+        KernelHeap::init_for_this_cpu();
+    }
+
+    // Set up serial UART (requires allocator)
+    setup_serial();
+
+    // Set up console logger (requires allocator)
     unsafe { setup_console_logger(); }
-    
-    // Early debug: write '4'
-    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'4'); }
-    
-    log::info!("Stage 2 init complete - calling kmain");
-    
+
+    log::info!("Memory allocator and console initialized");
+
     // Get cmdline
     let cmdline_str = boot_info.command_line_tag()
         .and_then(|tag| tag.cmdline().ok())
         .map(|cstr| alloc::string::String::from_utf8_lossy(cstr.as_bytes()).into_owned())
         .unwrap_or_default();
-    
-    // Early debug: write '5'
-    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'5'); }
-    
+
     // Call kmain
     crate::kmain(cmdline_str, core::ptr::null_mut());
-    
-    // Should not return
-    // Early debug: write 'X' if we return
-    unsafe { let _ = core::ptr::write_volatile(0x3F8 as *mut u8, b'X'); }
+
     loop {
         X86_64::halt();
     }
