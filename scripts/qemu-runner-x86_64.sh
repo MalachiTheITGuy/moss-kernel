@@ -1,6 +1,30 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
+set -e
 
-# Enable KVM only when available (to avoid qemu failing on systems without KVM)
+# First argument: the ELF file to run (required)
+# Second argument: init script to run (optional, defaults to /bin/sh)
+
+# Parse args:
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <elf-file> [init-script]"
+    exit 1
+fi
+
+if [ -n "$2" ]; then
+    append_args="--init=$2"
+else
+    append_args="--init=/bin/sh --init-arg=-i"
+fi
+
+base="$( cd "$( dirname "${BASH_SOURCE[0]}" )"/.. && pwd )"
+
+elf="$1"
+bin="${elf%.elf}.bin"
+
+# Convert to binary format
+objcopy -O binary "$elf" "$bin"
+
+# Enable KVM only when available
 KVM_OPTS=""
 if [ "$(uname -s)" = "Linux" ] && [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
     KVM_OPTS="-enable-kvm"
@@ -13,11 +37,12 @@ if [ -n "${KVM_OPTS}" ]; then
 fi
 
 qemu-system-x86_64 \
-    -nographic \
-    -serial mon:stdio \
+    -M q35 \
     ${CPU_OPTS} \
-    ${KVM_OPTS} \
-    -m 1G \
-    -kernel "$1" \
-    -append "${@:2}" \
-    -no-reboot
+    -m 2G \
+    -smp 4 \
+    -nographic \
+    -s \
+    -kernel "$bin" \
+    -append "$append_args --rootfs=ext4fs --automount=/dev,devfs --automount=/tmp,tmpfs --automount=/proc,procfs --automount=/sys,sysfs" \
+    ${KVM_OPTS}
