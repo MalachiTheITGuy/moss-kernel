@@ -40,7 +40,7 @@ impl PerCpuCache {
             // For now, let's use the swapgs/rdgsbase logic or just assume GS base points to the pointer.
             // Actually, a simpler way for early boot with 1 CPU is a static pointer.
             // But to be generic, we use GS.
-            asm!("mov {}, gs:0", out(reg) cache, options(nostack, readonly, preserves_flags));
+            asm!("mov {}, qword ptr gs:[0]", out(reg) cache, options(nostack, readonly, preserves_flags));
         }
 
         if cache.is_null() {
@@ -54,7 +54,7 @@ impl PerCpuCache {
 impl SlabCacheStorage for PerCpuCache {
     fn store(ptr: *mut SlabCache) {
         unsafe {
-            asm!("mov gs:0, {}", in(reg) ptr, options(nostack, nomem));
+            asm!("mov qword ptr gs:[0], {}", in(reg) ptr, options(nostack, nomem));
         }
     }
 

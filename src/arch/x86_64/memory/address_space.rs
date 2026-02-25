@@ -33,7 +33,9 @@ impl UserAddressSpace for X86_64ProcessAddressSpace {
     }
 
     fn activate(&self) {
-        // TODO: mov cr3, self.pml4_table
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) self.pml4_table.value());
+        }
     }
 
     fn deactivate(&self) {
