@@ -157,6 +157,20 @@ impl Arch for Aarch64 {
         fdt::get_cmdline()
     }
 
+    fn get_initrd() -> Option<libkernel::memory::region::PhysMemoryRegion> {
+        use crate::drivers::fdt_prober::get_fdt;
+        use libkernel::memory::address::PA;
+        use libkernel::memory::region::PhysMemoryRegion;
+        let dt = get_fdt();
+        let chosen = dt.find_nodes("/chosen").next()?;
+        let start = chosen.find_property("linux,initrd-start")?.u64();
+        let end = chosen.find_property("linux,initrd-end")?.u64();
+        Some(PhysMemoryRegion::from_start_end_address(
+            PA::from_value(start as _),
+            PA::from_value(end as _),
+        ))
+    }
+
     unsafe fn copy_from_user(
         src: UA,
         dst: *mut (),

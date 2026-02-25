@@ -15,6 +15,7 @@ use libkernel::{
     },
 };
 use super::mmu::{page_allocator::PageTableAllocator, page_mapper::PageOffsetPgTableMapper};
+use crate::memory::PageOffsetTranslator;
 
 pub struct X86_64ProcessAddressSpace {
     pml4_table: TPA<PgTableArray<PML4Table>>,
@@ -29,6 +30,35 @@ impl UserAddressSpace for X86_64ProcessAddressSpace {
         Self: Sized,
     {
         let pml4_table = PageTableAllocator::new().allocate_page_table()?;
+
+        // Copy the kernel's upper-half PML4 entries (entries 256–511) into the new
+        // process PML4 so that kernel code remains reachable after CR3 switches.
+        {
+            use super::mmu::KERN_ADDR_SPC;
+            if let Some(kern) = KERN_ADDR_SPC.get() {
+                let kern_pml4_pa = kern.lock_save_irq().table_pa();
+
+                // 512 u64 entries; upper half starts at index 256
+                let kern_entries = unsafe {
+                    core::slice::from_raw_parts(
+                        kern_pml4_pa.cast::<u64>()
+                            .to_va::<PageOffsetTranslator>()
+                            .value() as *const u64,
+                        512,
+                    )
+                };
+                let proc_entries = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        pml4_table.to_untyped().cast::<u64>()
+                            .to_va::<PageOffsetTranslator>()
+                            .value() as *mut u64,
+                        512,
+                    )
+                };
+                proc_entries[256..512].copy_from_slice(&kern_entries[256..512]);
+            }
+        }
+
         Ok(Self { pml4_table })
     }
 

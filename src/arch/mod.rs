@@ -21,7 +21,7 @@ use alloc::sync::Arc;
 use libkernel::{
     CpuOps, VirtualMemory,
     error::Result,
-    memory::address::{UA, VA},
+    memory::{address::{UA, VA}, region::PhysMemoryRegion},
 };
 
 pub trait Arch: CpuOps + VirtualMemory {
@@ -65,6 +65,14 @@ pub trait Arch: CpuOps + VirtualMemory {
     fn restart() -> !;
 
     fn get_cmdline() -> Option<String>;
+
+    /// Returns the physical memory region of the initrd/ramdisk, if one was
+    /// provided to the kernel by the bootloader.
+    ///
+    /// Returns `None` if no initrd was provided.
+    fn get_initrd() -> Option<PhysMemoryRegion> {
+        None
+    }
 
     /// Call a user-specified signal handler in the current process.
     fn do_signal(

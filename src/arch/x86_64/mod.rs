@@ -99,6 +99,10 @@ impl crate::arch::Arch for X86_64 {
         self::boot::get_cmdline()
     }
 
+    fn get_initrd() -> Option<libkernel::memory::region::PhysMemoryRegion> {
+        self::boot::INITRD_REGION.get().copied()
+    }
+
     fn do_signal(
         _sig: SigId,
         _action: UserspaceSigAction,
