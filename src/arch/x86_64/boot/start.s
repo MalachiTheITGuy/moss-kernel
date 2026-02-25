@@ -91,8 +91,8 @@ _start:
 
 .code64
 .long_mode:
-    # Clear segment registers
-    mov $0, %ax
+    # Load kernel data selector into all data segment registers
+    mov $0x10, %ax
     mov %ax, %ds
     mov %ax, %es
     mov %ax, %fs
@@ -115,8 +115,12 @@ _start:
 .section .rodata
 .align 8
 gdt64:
-    .quad 0 # Null
-    .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) # Code (exec/read, user=0, present, 64-bit)
+    .quad 0                                                                   # Entry 0: Null
+    .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)                      # Entry 1: Kernel code  (DPL=0, 64-bit) → 0x08
+    .quad (1 << 44) | (1 << 47)                                               # Entry 2: Kernel data  (DPL=0)         → 0x10
+    .quad 0                                                                   # Entry 3: Placeholder  (padding)        → 0x18
+    .quad (1 << 44) | (1 << 47) | (3 << 45)                                  # Entry 4: User data    (DPL=3)          → 0x23 (USER_SS)
+    .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45)          # Entry 5: User code    (DPL=3, 64-bit)  → 0x2b (USER_CS)
 gdt64_ptr:
     .short . - gdt64 - 1
     .quad gdt64 - 0xffffffff80000000
