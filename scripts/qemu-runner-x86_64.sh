@@ -41,8 +41,11 @@ qemu-system-x86_64 \
     ${CPU_OPTS} \
     -m 2G \
     -smp 4 \
-    -nographic \
+    -display none \
+    -monitor none \
+    -serial stdio \
     -s \
-    -kernel "$bin" \
+    -kernel "$elf" \
+    -initrd moss.img \
     -append "$append_args --rootfs=ext4fs --automount=/dev,devfs --automount=/tmp,tmpfs --automount=/proc,procfs --automount=/sys,sysfs" \
     ${KVM_OPTS}

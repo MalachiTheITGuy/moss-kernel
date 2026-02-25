@@ -9,24 +9,50 @@ multiboot_header:
     # checksum
     .long 0x100000000 - (0xe85250d6 + 0 + (multiboot_header_end - multiboot_header))
 
-    # tags here if needed
+    # Entry address tag
+    .short 3    # type = 3 (entry address)
+    .short 0    # flags
+    .long 16    # size
+    .long _start - 0xffffffff80000000 # physical entry address
+    .long 0     # padding to 16 bytes
 
+    # End tag
     .short 0    # type
     .short 0    # flags
     .long 8     # size
 multiboot_header_end:
 
+.section .note.PVH, "a"
+.align 4
+    .long 4             # Name size
+    .long 4             # Desc size
+    .long 18            # Type: ELF_NOTE_PVH_BOOT (18)
+    .ascii "Xen\0"      # Name
+    .long _start - 0xffffffff80000000 # Entry point (physical)
+
+.section .text.boot
+.code32
 .global _start
 _start:
     cli
     cld
 
+    # Early serial debug: write '!' to COM1
+    mov $0x3F8, %dx
+    mov $0x21, %al
+    out %al, %dx
+
     # Update stack pointer (physical)
     mov $(__boot_stack - 0xffffffff80000000), %esp
 
+    # Debug: write '@' after setting stack
+    mov $0x3F8, %dx
+    mov $0x40, %al
+    out %al, %dx
+
     # Check if we were booted by Multiboot2
-    cmp $0x36d76289, %eax
-    jne .error
+    # cmp $0x36d76289, %eax
+    # jne .error
 
     # Bootstrapping page tables
     # PML4[0] -> boot_pdpt (Identity)
@@ -58,9 +84,24 @@ _start:
     dec %ecx
     jnz .fill_pd
 
+    # Debug: write '&' after filling PD
+    mov $0x3F8, %dx
+    mov $0x26, %al
+    out %al, %dx
+
     # Load CR3
     mov $(boot_pml4 - 0xffffffff80000000), %eax
     mov %eax, %cr3
+
+    # Debug: write '*' to check if CR3 load reached
+    mov $0x3F8, %dx
+    mov $0x2A, %al
+    out %al, %dx
+
+    # Marker '#'
+    mov $0x3F8, %dx
+    mov $0x23, %al
+    out %al, %dx
 
     # Enable PAE
     mov %cr4, %eax
@@ -81,8 +122,18 @@ _start:
     # Load 64-bit GDT
     lgdt (gdt64_ptr - 0xffffffff80000000)
 
+    # Debug: write '^' before ljmp
+    mov $0x3F8, %dx
+    mov $0x5E, %al
+    out %al, %dx
+
     # Far jump to 64-bit code
     ljmp $0x8, $(.long_mode - 0xffffffff80000000)
+
+    # Marker '$'
+    mov $0x3F8, %dx
+    mov $0x24, %al
+    out %al, %dx
 
 .error:
     # Just hang
@@ -91,6 +142,11 @@ _start:
 
 .code64
 .long_mode:
+    # Debug: write '+' to confirm long mode reached
+    mov $0x3F8, %dx
+    mov $0x2B, %al
+    out %al, %dx
+
     # Load kernel data selector into all data segment registers
     mov $0x10, %ax
     mov %ax, %ds
@@ -101,6 +157,11 @@ _start:
 
     # Load higher half stack
     mov $__boot_stack, %rsp
+
+    # Marker '%'
+    mov $0x3F8, %dx
+    mov $0x25, %al
+    out %al, %dx
 
     # Jump to Rust arch_init_stage1
     # Arguments: rdi = mb_info_ptr, rsi = image_start, rdx = image_end
@@ -117,7 +178,7 @@ _start:
 gdt64:
     .quad 0                                                                   # Entry 0: Null
     .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)                      # Entry 1: Kernel code  (DPL=0, 64-bit) → 0x08
-    .quad (1 << 44) | (1 << 47)                                               # Entry 2: Kernel data  (DPL=0)         → 0x10
+    .quad (3 << 40) | (1 << 44) | (1 << 47)                                               # Entry 2: Kernel data  (DPL=0)         → 0x10
     .quad 0                                                                   # Entry 3: Placeholder  (padding)        → 0x18
     .quad (1 << 44) | (1 << 47) | (3 << 45)                                  # Entry 4: User data    (DPL=3)          → 0x23 (USER_SS)
     .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45)          # Entry 5: User code    (DPL=3, 64-bit)  → 0x2b (USER_CS)

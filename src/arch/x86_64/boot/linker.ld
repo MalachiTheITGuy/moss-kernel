@@ -6,7 +6,7 @@ SECTIONS
     . = 0xffffffff80100000;
     __image_start = .;
 
-    .text : AT(ADDR(.text) - 0xffffffff80000000)
+    .text : AT(0x100000)
     {
         __text_start = .;
         *(.text.boot)
