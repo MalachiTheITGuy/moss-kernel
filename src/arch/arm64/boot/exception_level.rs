@@ -1,14 +1,14 @@
 use super::park_cpu;
 use aarch64_cpu::asm;
 use aarch64_cpu::registers::{
-    CurrentEL, ELR_EL2, ELR_EL3, HCR_EL2, Readable, SCR_EL3, SP_EL1, SPSR_EL2, SPSR_EL3, Writeable,
+    CurrentEL, Readable, Writeable, ELR_EL2, ELR_EL3, HCR_EL2, SCR_EL3, SPSR_EL2, SPSR_EL3, SP_EL1,
 };
 use core::arch::asm;
 
 /// First rust entry point, called from `boot.s`. This function takes us down to
 /// EL1. Also called by secondaries during secondary boot.
 #[inline(never)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn transition_to_el1(stack_addr: u64) {
     let ret_address = {
         let mut addr: u64;

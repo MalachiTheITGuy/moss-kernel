@@ -1,11 +1,11 @@
-
+use crate::arch::x86_64::memory::heap::SLAB_ALLOC;
 use crate::arch::x86_64::memory::mmu::{
     page_mapper::PageOffsetPgTableMapper, setup_kern_addr_space,
 };
-use alloc::string::String;
-use crate::console::setup_console_logger;
 use crate::memory::{PageOffsetTranslator, INITAL_ALLOCATOR, PAGE_ALLOC};
 use crate::sync::OnceLock;
+use alloc::string::String;
+use core::arch::asm;
 use core::ptr;
 use libkernel::arch::x86_64::memory::pg_descriptors::MemoryType;
 use libkernel::arch::x86_64::memory::pg_tables::{
@@ -18,9 +18,12 @@ use libkernel::memory::allocators::slab::allocator::SlabAllocator;
 use libkernel::memory::permissions::PtePermissions;
 use libkernel::memory::region::{PhysMemoryRegion, VirtMemoryRegion};
 use libkernel::{CpuOps, VirtualMemory};
-use multiboot2::BootInformation;
+use multiboot::information::{
+    MemoryManagement, MemoryType as MultibootMemoryType, Multiboot, PAddr,
+};
+
 use crate::arch::x86_64::X86_64;
-use crate::arch::x86_64::memory::heap::SLAB_ALLOC;
+use crate::console::setup_console_logger;
 
 const STATIC_PAGE_COUNT: usize = 64;
 static mut BOOT_PAGES: [[u8; 4096]; STATIC_PAGE_COUNT] = [[0; 4096]; STATIC_PAGE_COUNT];
@@ -72,24 +75,29 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
         pml4_pa,
         MapAttributes {
             phys: PhysMemoryRegion::new(PA::from_value(0x100000), 2 * 1024 * 1024),
-            virt: VirtMemoryRegion::new(VA::from_value(0xffffffff80100000), 2 * 1024 * 1024),
+            virt: VirtMemoryRegion::new(VA::from_value(0xffffffff80000000), 2 * 1024 * 1024),
             mem_type: MemoryType::Normal,
             perms: PtePermissions::rwx(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 2. Linear map of first 4GiB (covers RAM and MMIO including LAPIC at 0xFEE00000)
     map_range(
         pml4_pa,
         MapAttributes {
             phys: PhysMemoryRegion::new(PA::from_value(0), 4 * 1024 * 1024 * 1024usize),
-            virt: VirtMemoryRegion::new(VA::from_value(X86_64::PAGE_OFFSET), 4 * 1024 * 1024 * 1024usize),
+            virt: VirtMemoryRegion::new(
+                VA::from_value(X86_64::PAGE_OFFSET),
+                4 * 1024 * 1024 * 1024usize,
+            ),
             mem_type: MemoryType::Normal,
             perms: PtePermissions::rw(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 3. Identity map first 2MiB (to keep running during boot transition)
     map_range(
@@ -101,7 +109,8 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
             perms: PtePermissions::rx(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 4. Identity-map LAPIC MMIO (physical 0xFEE00000) so interrupts::init() can access it
     map_range(
@@ -113,55 +122,96 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
             perms: PtePermissions::rw(false),
         },
         &mut ctx,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Load new CR3
     unsafe {
-        core::arch::asm!("mov cr3, {}", in(reg) pml4_pa.value());
+        core::arch::asm!("mov cr3, rax", in("rax") pml4_pa.value());
     }
 
     setup_kern_addr_space(pml4_pa).unwrap();
 }
 
-// Storage for boot info across stages
-static BOOT_INFO: OnceLock<BootInformation> = OnceLock::new();
+// Storage for boot cmdline across stages
+static BOOT_CMDLINE: OnceLock<String> = OnceLock::new();
 
 // Physical region of the initrd (first multiboot2 module), set in arch_init_stage1
 pub static INITRD_REGION: OnceLock<PhysMemoryRegion> = OnceLock::new();
 
 #[unsafe(no_mangle)]
-pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _image_end: usize) -> ! {
-    let boot_info = unsafe {
-        multiboot2::BootInformation::load(mb_info_ptr as *const _)
-            .expect("Failed to load Multiboot2 info")
-    };
+pub extern "C" fn arch_init_stage1(
+    mb_info_ptr: usize,
+    _image_start: usize,
+    _image_end: usize,
+) -> ! {
+    // unsafe {
+    //     asm!("outb %al, %dx", in(reg_byte) 40u8);
+    // }
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'A', in("dx") 0x3F8u16, options(att_syntax));
+    }
+    struct IdentityMem;
 
-    // Remember the first module (initrd) before we store boot_info
-    if let Some(module) = boot_info.module_tags().next() {
-        let start = PA::from_value(module.start_address() as usize);
-        let size = (module.end_address() - module.start_address()) as usize;
-        INITRD_REGION.set(PhysMemoryRegion::new(start, size)).ok();
+    impl MemoryManagement for IdentityMem {
+        unsafe fn paddr_to_slice(&self, addr: PAddr, size: usize) -> Option<&'static [u8]> {
+            unsafe { Some(core::slice::from_raw_parts(addr as *const u8, size)) }
+        }
+        unsafe fn allocate(&mut self, _size: usize) -> Option<(PAddr, &mut [u8])> {
+            None
+        }
+        unsafe fn deallocate(&mut self, _addr: PAddr) {}
     }
 
-    BOOT_INFO.set(boot_info).ok();
+    let mut mem = IdentityMem;
+    let boot_info = unsafe {
+        Multiboot::from_ptr(mb_info_ptr as PAddr, &mut mem).expect("Failed to load Multiboot info")
+    };
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'B', in("dx") 0x3F8u16, options(att_syntax));
+    }
+    // Remember the first module (initrd) before we store boot_info
+    if let Some(mut modules) = boot_info.modules() {
+        if let Some(module) = modules.next() {
+            let start = PA::from_value(module.start as usize);
+            let size = (module.end - module.start) as usize;
+            INITRD_REGION.set(PhysMemoryRegion::new(start, size)).ok();
+        }
+    }
+
+    // Extract cmdline
+    let cmdline = boot_info
+        .command_line()
+        .map(|s| alloc::string::String::from(s))
+        .unwrap_or_default();
+    BOOT_CMDLINE.set(cmdline).ok();
+
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'C', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Set up page tables (also maps LAPIC MMIO)
     bootstrap_memory(_image_start, _image_end);
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'D', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Set GS base to valid per-CPU storage BEFORE any heap use
     setup_gs_base();
 
-    // Populate INITAL_ALLOCATOR from the multiboot2 memory map
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'E', in("dx") 0x3F8u16, options(att_syntax));
+    }
+    // Populate INITAL_ALLOCATOR from the multiboot memory map
     {
-        let boot_info = BOOT_INFO.get().expect("Boot info not set");
         let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
         let alloc = alloc.as_mut().unwrap();
 
-        if let Some(memory_map_tag) = boot_info.memory_map_tag() {
-            for entry in memory_map_tag.memory_areas() {
-                if entry.typ() == multiboot2::MemoryAreaType::Available {
-                    let start = PA::from_value(entry.start_address() as usize);
-                    let size = entry.size() as usize;
+        if let Some(regions) = boot_info.memory_regions() {
+            for entry in regions {
+                if entry.memory_type() == MultibootMemoryType::Available {
+                    let start = PA::from_value(entry.base_address() as usize);
+                    let size = entry.length() as usize;
                     let _ = alloc.add_memory(PhysMemoryRegion::new(start, size));
                 }
             }
@@ -170,16 +220,23 @@ pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _ima
         // Reserve kernel image
         let _ = alloc.add_reservation(PhysMemoryRegion::new(PA::from_value(0x100000), 0x200000));
 
-        // Reserve all multiboot2 modules (initrd)
-        for module in boot_info.module_tags() {
-            let start = PA::from_value(module.start_address() as usize);
-            let size = (module.end_address() - module.start_address()) as usize;
-            let _ = alloc.add_reservation(PhysMemoryRegion::new(start, size));
+        // Reserve all multiboot modules (initrd)
+        if let Some(modules) = boot_info.modules() {
+            for module in modules {
+                let start = PA::from_value(module.start as usize);
+                let size = (module.end - module.start) as usize;
+                let _ = alloc.add_reservation(PhysMemoryRegion::new(start, size));
+            }
         }
 
-        unsafe { alloc.permit_region_list_reallocs(); }
+        unsafe {
+            alloc.permit_region_list_reallocs();
+        }
     }
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'F', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Promote to full page/slab allocators and init the per-CPU heap.
     // Must happen before any Box/Arc/Vec allocation (e.g. in interrupts::init).
     {
@@ -202,22 +259,45 @@ pub extern "C" fn arch_init_stage1(mb_info_ptr: usize, _image_start: usize, _ima
         KernelHeap::init_for_this_cpu();
     }
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'G', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Initialize per-CPU variables (requires heap)
-    unsafe { libkernel::sync::per_cpu::setup_percpu(1); }
+    unsafe {
+        libkernel::sync::per_cpu::setup_percpu(1);
+    }
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'H', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Run kernel driver initcalls (registers null/zero/console/uart chardevs, etc.)
-    unsafe { crate::drivers::init::run_initcalls(); }
+    unsafe {
+        crate::drivers::init::run_initcalls();
+    }
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'I', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Install the IDT
     crate::arch::x86_64::exceptions::exceptions_init().expect("Failed to init exceptions");
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'J', in("dx") 0x3F8u16, options(att_syntax));
+    }
     // Initialize interrupt controller and timer (requires Arc allocation → needs heap)
     crate::arch::x86_64::interrupts::init();
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'K', in("dx") 0x3F8u16, options(att_syntax));
+    }
     X86_64::enable_interrupts();
 
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") b'L', in("dx") 0x3F8u16, options(att_syntax));
+    }
     arch_init_stage2();
 
+    #[allow(clippy::never_loop)]
     loop {
         X86_64::halt();
     }
@@ -239,57 +319,58 @@ pub fn setup_gs_base() {
 }
 
 pub fn arch_init_stage2() {
-    let boot_info = BOOT_INFO.get().expect("Boot info not set");
-
     // Set up serial UART (requires allocator + interrupt controller)
     setup_serial();
 
     // Set up console logger
-    unsafe { setup_console_logger(); }
+    unsafe {
+        setup_console_logger();
+    }
 
     log::info!("x86_64: boot stage 2 complete");
 
-    // Build cmdline from multiboot2 command line tag
-    let cmdline_str = boot_info.command_line_tag()
-        .and_then(|tag| tag.cmdline().ok())
-        .map(|cstr| alloc::string::String::from_utf8_lossy(cstr.as_bytes()).into_owned())
-        .unwrap_or_default();
+    // Build cmdline from multiboot command line
+    let cmdline_str = BOOT_CMDLINE.get().cloned().unwrap_or_default();
 
     crate::kmain(cmdline_str, core::ptr::null_mut());
 
+    #[allow(clippy::never_loop)]
     loop {
         X86_64::halt();
     }
 }
 
 pub fn get_cmdline() -> Option<String> {
-    BOOT_INFO.get()
-        .and_then(|info| info.command_line_tag())
-        .map(|tag| {
-            let s = tag.cmdline().unwrap_or_default();
-            String::from(s)
-        })
+    BOOT_CMDLINE.get().cloned()
 }
 
 pub fn setup_serial() {
     use crate::drivers::uart::ns16550::Ns16550;
     use crate::drivers::uart::Uart;
-    use crate::interrupts::{get_interrupt_root, InterruptConfig, InterruptDescriptor, TriggerMode};
+    use crate::interrupts::{
+        get_interrupt_root, InterruptConfig, InterruptDescriptor, TriggerMode,
+    };
 
     let mut uart_hw = Ns16550::new(0x3F8);
     uart_hw.init();
 
     let root = get_interrupt_root().expect("Interrupt root not initialized");
-    let uart = root.claim_interrupt(
-        InterruptConfig {
-            descriptor: InterruptDescriptor::Spi(4), // COM1 is IRQ 4
-            trigger: TriggerMode::EdgeRising,
-        },
-        |handle| Uart::new(uart_hw, handle, "com1"),
-    ).expect("Failed to claim UART interrupt");
+    let uart = root
+        .claim_interrupt(
+            InterruptConfig {
+                descriptor: InterruptDescriptor::Spi(4), // COM1 is IRQ 4
+                trigger: TriggerMode::EdgeRising,
+            },
+            |handle| Uart::new(uart_hw, handle, "com1"),
+        )
+        .expect("Failed to claim UART interrupt");
 
-    crate::console::set_active_console(uart.clone(), libkernel::driver::CharDevDescriptor {
-        major: crate::drivers::ReservedMajors::Uart as _,
-        minor: 0,
-    }).expect("Failed to set active console");
+    crate::console::set_active_console(
+        uart.clone(),
+        libkernel::driver::CharDevDescriptor {
+            major: crate::drivers::ReservedMajors::Uart as _,
+            minor: 0,
+        },
+    )
+    .expect("Failed to set active console");
 }

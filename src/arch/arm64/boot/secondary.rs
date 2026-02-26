@@ -49,7 +49,7 @@ struct SecondaryBootInfo {
 }
 
 #[unsafe(naked)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C" fn do_secondary_start(boot_info: *const SecondaryBootInfo) {
     naked_asm!(
         "ldr x1, [x0]", // Setup boot stack.

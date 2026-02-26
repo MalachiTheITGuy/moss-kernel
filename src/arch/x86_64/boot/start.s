@@ -3,23 +3,19 @@
 .code32
 .align 8
 multiboot_header:
-    .long 0xe85250d6                # magic number (multiboot 2)
-    .long 0                         # architecture 0 (protected mode i386)
+    .long 0xe85250d6                # magic number (multiboot2)
+    .long 0                         # architecture (i386 protected mode)
     .long multiboot_header_end - multiboot_header # header length
-    # checksum
-    .long 0x100000000 - (0xe85250d6 + 0 + (multiboot_header_end - multiboot_header))
-
-    # Entry address tag
-    .short 3    # type = 3 (entry address)
-    .short 0    # flags
-    .long 16    # size
-    .long _start - 0xffffffff80000000 # physical entry address
-    .long 0     # padding to 16 bytes
-
+    .long -(0xe85250d6 + 0 + (multiboot_header_end - multiboot_header)) # checksum
+    # Information request tag
+    .short 1                        # type
+    .short 0                        # flags
+    .long 12                        # size
+    .long 1                         # memory map
     # End tag
-    .short 0    # type
-    .short 0    # flags
-    .long 8     # size
+    .short 0                        # type
+    .short 0                        # flags
+    .long 8                         # size
 multiboot_header_end:
 
 .section .note.PVH, "a"
@@ -51,8 +47,8 @@ _start:
     out %al, %dx
 
     # Check if we were booted by Multiboot2
-    # cmp $0x36d76289, %eax
-    # jne .error
+    cmp $0x36d76289, %eax
+    jne .error
 
     # Bootstrapping page tables
     # PML4[0] -> boot_pdpt (Identity)
