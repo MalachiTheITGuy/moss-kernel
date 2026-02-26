@@ -59,11 +59,11 @@ macro_rules! static_dir {
                 self.id
             }
 
-            async fn getattr(&'async_trait self) -> Result<FileAttr> {
+            async fn getattr(&self) -> Result<FileAttr> {
                 Ok(self.attr.clone())
             }
 
-            async fn lookup(&'async_trait self, name: &str) -> Result<Arc<dyn Inode + Send + Sync + 'async_trait>> {
+            async fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>> {
                 match name {
                     $(
                         $entry_name => {
@@ -78,7 +78,7 @@ macro_rules! static_dir {
                 }
             }
 
-            async fn readdir(&'async_trait self, start_offset: u64) -> Result<Box<dyn DirStream + Send + 'async_trait>> {
+            async fn readdir(&self, start_offset: u64) -> Result<Box<dyn DirStream>> {
                 #[allow(unused_mut)]
                 let mut entries: Vec<Dirent> = Vec::with_capacity(Self::num_entries());
                 $(

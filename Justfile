@@ -18,7 +18,12 @@
 #   just create-image x86_64 # creates x86_64 image
 #   just create-image aarch64 # creates aarch64 image
 create-image arch="x86_64":
-    ./scripts/create-image.sh {{ arch }}
+    #!/usr/bin/env sh
+    case "{{ arch }}" in
+        x86_64|aarch64) ;;
+        *) echo "Error: unsupported architecture '{{ arch }}'" >&2; exit 1 ;;
+    esac
+    ./scripts/create-image.sh "{{ arch }}"
 
 # Run the kernel via QEMU for the specified architecture
 # Usage: just run [arch]

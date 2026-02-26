@@ -17,7 +17,7 @@ use alloc::{
 };
 use arch::{Arch, ArchImpl};
 use core::panic::PanicInfo;
-use drivers::{fdt_prober::get_fdt, fs::register_fs_drivers};
+use drivers::fs::register_fs_drivers;
 use fs::VFS;
 use libkernel::{
     CpuOps, VirtualMemory,
@@ -25,10 +25,7 @@ use libkernel::{
         BlockDevice, OpenFlags, attr::FilePermissions, blk::ramdisk::RamdiskBlkDev, path::Path,
         pathbuf::PathBuf,
     },
-    memory::{
-        address::{PA, VA},
-        region::PhysMemoryRegion,
-    },
+    memory::address::VA,
 };
 use log::{error, warn};
 use process::ctx::UserCtx;
@@ -79,22 +76,7 @@ async fn launch_init(mut opts: KOptions) {
         .init
         .unwrap_or_else(|| panic!("No init specified in kernel command line"));
 
-    let dt = get_fdt();
-
-    let initrd_block_dev: Option<Box<dyn BlockDevice>> = if let Some(chosen) =
-        dt.find_nodes("/chosen").next()
-        && let Some(start_addr) = chosen
-            .find_property("linux,initrd-start")
-            .map(|prop| prop.u64())
-        && let Some(end_addr) = chosen
-            .find_property("linux,initrd-end")
-            .map(|prop| prop.u64())
-    {
-        let region = PhysMemoryRegion::from_start_end_address(
-            PA::from_value(start_addr as _),
-            PA::from_value(end_addr as _),
-        );
-
+    let initrd_block_dev: Option<Box<dyn BlockDevice>> = if let Some(region) = ArchImpl::get_initrd() {
         Some(Box::new(
             RamdiskBlkDev::new(
                 region,
