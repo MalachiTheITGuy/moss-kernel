@@ -95,6 +95,59 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         // do about it during a panic.
         let cr2 = x86_64::registers::control::Cr2::read()
             .unwrap_or(x86_64::VirtAddr::new(0));
+
+        // ── Kernel upper-half PML4 propagation ──────────────────────────────
+        // When a new kernel virtual mapping is installed (e.g. for a ramdisk)
+        // AFTER a process address space was cloned from the kernel PML4, the
+        // new PML4 entry is only present in the kernel PML4, not in the
+        // process PML4.  On the first access from that process, a page fault
+        // fires with a "not-present" error code.  We detect that case here and
+        // copy the kernel PML4 entry into the process PML4, then return (which
+        // causes the CPU to retry the faulting instruction).
+        if vector == 14 {
+            use crate::arch::x86_64::memory::PAGE_OFFSET;
+            use crate::arch::x86_64::memory::mmu::KERN_ADDR_SPC;
+
+            let cr2_val = cr2.as_u64() as usize;
+            let pml4_idx = (cr2_val >> 39) & 0x1FF;
+
+            // Kernel upper-half: canonical address with bit 47 set (PML4 idx
+            // 256..511) and error code bit 0 clear (not-present fault).
+            if pml4_idx >= 256 && (state_ref.error_code & 1) == 0 {
+                if let Some(kern_spc) = KERN_ADDR_SPC.get() {
+                    let kern_pml4_pa = kern_spc.lock_save_irq().table_pa().value();
+
+                    // Read the kernel's PML4 entry for this index through the
+                    // PAGE_OFFSET linear map (covers all physical memory).
+                    let kern_entry: u64 = unsafe {
+                        let ptr = (PAGE_OFFSET + kern_pml4_pa + pml4_idx * 8) as *const u64;
+                        ptr.read_volatile()
+                    };
+
+                    if kern_entry & 1 != 0 {
+                        // Kernel PML4 entry is present.  Get the active CR3
+                        // (process PML4 PA) and check it differs from the
+                        // kernel PML4 (i.e. we are in a process page-table
+                        // context, not already the kernel's).
+                        let current_cr3: usize;
+                        unsafe { core::arch::asm!("mov {}, cr3", out(reg) current_cr3) };
+
+                        if current_cr3 != kern_pml4_pa {
+                            // Propagate the entry and retry.
+                            unsafe {
+                                let ptr = (PAGE_OFFSET + current_cr3 + pml4_idx * 8) as *mut u64;
+                                ptr.write_volatile(kern_entry);
+                                // Flush the TLB for the faulting address so
+                                // the CPU picks up the new mapping immediately.
+                                core::arch::asm!("invlpg [{addr}]", addr = in(reg) cr2_val);
+                            }
+                            return state;
+                        }
+                    }
+                }
+            }
+        }
+
         log::error!(
             "x86_64 exception occurred:\n{}CR2: 0x{:016x}\n",
             state_ref,

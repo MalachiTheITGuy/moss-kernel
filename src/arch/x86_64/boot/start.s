@@ -1,3 +1,15 @@
+# PVH ELF Note (required for QEMU -kernel to load an uncompressed ELF).
+# QEMU enters here in 32-bit protected mode with:
+#   EAX = 0x336ec578 (XEN_HVM_START_MAGIC_VALUE)
+#   EBX = physical address of hvm_start_info
+.section .note.PVH, "a"
+.align 4
+    .long 4             # Name size
+    .long 4             # Desc size
+    .long 18            # Type: XEN_ELFNOTE_PHYS32_ENTRY
+    .ascii "Xen\0"      # Name
+    .long _start - 0xffffffff80000000 # Entry point (physical)
+
 # Multiboot2 header
 .section .text.boot
 .code32
@@ -18,14 +30,6 @@ multiboot_header:
     .long 8                         # size
 multiboot_header_end:
 
-.section .note.PVH, "a"
-.align 4
-    .long 4             # Name size
-    .long 4             # Desc size
-    .long 18            # Type: ELF_NOTE_PVH_BOOT (18)
-    .ascii "Xen\0"      # Name
-    .long _start - 0xffffffff80000000 # Entry point (physical)
-
 .section .text.boot
 .code32
 .global _start
@@ -33,7 +37,12 @@ _start:
     cli
     cld
 
-
+    # Save boot magic (EAX) and boot info pointer (EBX) before they are
+    # clobbered.  Under PVH boot EAX=0x336ec578 and EBX->hvm_start_info;
+    # under Multiboot2 EAX=0x36d76289 and EBX->multiboot2 info.
+    # We store them in .data (not .bss) so BSS zeroing does not wipe them.
+    mov %eax, (boot_magic_saved - 0xffffffff80000000)
+    mov %ebx, (boot_info_ptr_saved - 0xffffffff80000000)
 
     # Update stack pointer (physical)
     mov $(__boot_stack - 0xffffffff80000000), %esp
@@ -48,9 +57,8 @@ _start:
     xor %eax, %eax
     rep stosb
 
-    # Skip Multiboot check - QEMU -kernel doesn't pass multiboot magic.
-    # The kernel uses PVH entry point via .note.PVH section instead.
-    # For standard Multiboot, use cmp $0x2BADB002, %eax
+    # Verify Multiboot2 magic in EAX. QEMU loads via the multiboot2 header
+    # and passes 0x36d76289 in EAX with EBX pointing to the info structure.
     # cmp $0x36d76289, %eax
     # jne .error
 
@@ -152,10 +160,13 @@ _start:
     out %al, %dx
 
     # Jump to Rust arch_init_stage1
-    # Arguments: rdi = mb_info_ptr, rsi = image_start, rdx = image_end
-    mov %ebx, %edi
+    # Arguments: rdi = mb_info_ptr, rsi = image_start, rdx = image_end, rcx = boot_magic
+    # Use RIP-relative loads: bare symbol refs at 0xffffffff8... can't be
+    # encoded as 32-bit absolute addresses in 64-bit mode.
+    movl boot_info_ptr_saved(%rip), %edi
     mov $__image_start, %rsi
     mov $__image_end, %rdx
+    movl boot_magic_saved(%rip), %ecx
     call arch_init_stage1
 
     # Should not return
@@ -177,6 +188,15 @@ gdt64_ptr_phys:
 gdt64_ptr_virt:
     .short . - gdt64 - 1
     .quad gdt64
+
+# Saved across the 32-bit → 64-bit transition.  Must be in .data
+# (not .bss) because BSS is zeroed after these are written.
+.section .data
+.align 4
+boot_magic_saved:
+    .long 0
+boot_info_ptr_saved:
+    .long 0
 
 .section .bss
 .align 4096

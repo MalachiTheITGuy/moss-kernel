@@ -198,59 +198,199 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
 
 }
 
-// Storage for boot cmdline across stages
-static BOOT_CMDLINE: OnceLock<String> = OnceLock::new();
+// Storage for boot cmdline across stages.
+// We cannot use a heap-allocated String here because arch_init_stage1 runs
+// before the allocator is initialized.  Instead we copy the raw bytes into a
+// fixed-size static buffer and build the String later in arch_init_stage2.
+const CMDLINE_BUF_LEN: usize = 4096;
+static mut BOOT_CMDLINE_BUF: [u8; CMDLINE_BUF_LEN] = [0u8; CMDLINE_BUF_LEN];
+static BOOT_CMDLINE_LEN: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+fn store_cmdline_raw(s: &str) {
+    let bytes = s.as_bytes();
+    let len = bytes.len().min(CMDLINE_BUF_LEN);
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            core::ptr::addr_of_mut!(BOOT_CMDLINE_BUF) as *mut u8,
+            len,
+        );
+    }
+    BOOT_CMDLINE_LEN.store(len, core::sync::atomic::Ordering::Relaxed);
+}
+
+fn load_cmdline_string() -> String {
+    let len = BOOT_CMDLINE_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    let bytes = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(BOOT_CMDLINE_BUF) as *const u8, len) };
+    String::from(core::str::from_utf8(bytes).unwrap_or(""))
+}
 
 // Physical region of the initrd (first multiboot2 module), set in arch_init_stage1
 pub static INITRD_REGION: OnceLock<PhysMemoryRegion> = OnceLock::new();
+
+/// Magic value placed in EAX by QEMU/Xen when booting via the PVH entry point.
+const XEN_HVM_START_MAGIC: u32 = 0x336e_c578;
+
+/// Xen/PVH hvm_start_info v0 (QEMU only ever uses v0).
+#[repr(C)]
+struct HvmStartInfo {
+    magic: u32,
+    version: u32,
+    flags: u32,
+    nr_modules: u32,
+    modlist_paddr: u64,
+    cmdline_paddr: u64,
+    rsdp_paddr: u64,
+}
+
+/// Entry in the hvm_modlist (one per initrd module).
+#[repr(C)]
+struct HvmModlistEntry {
+    paddr: u64,
+    size: u64,
+    cmdline_paddr: u64,
+    _reserved: u64,
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn arch_init_stage1(
     mb_info_ptr: usize,
     _image_start: usize,
     _image_end: usize,
+    boot_magic: u32,
 ) -> ! {
-    // Guard clause: check for null/invalid multiboot info pointer
-    // This happens when using QEMU's -kernel option instead of multiboot
-    let mb_info_valid = mb_info_ptr != 0;
+    // Early serial: print boot magic and info ptr before any heap use.
+    // Format: "BM:" <8-hex-digits> " BI:" <16-hex-digits> "\n"
+    debug_serial_putchar(b'B');
+    debug_serial_putchar(b'M');
+    debug_serial_putchar(b':');
+    debug_serial_puthex_byte((boot_magic >> 24) as u8);
+    debug_serial_puthex_byte((boot_magic >> 16) as u8);
+    debug_serial_puthex_byte((boot_magic >> 8) as u8);
+    debug_serial_puthex_byte(boot_magic as u8);
+    debug_serial_putchar(b' ');
+    debug_serial_putchar(b'B');
+    debug_serial_putchar(b'I');
+    debug_serial_putchar(b':');
+    debug_serial_puthex_addr(mb_info_ptr);
+    debug_serial_putchar(b'\r');
+    debug_serial_putchar(b'\n');
 
-    struct IdentityMem;
+    // Detect PVH by reading hvm_start_info.magic (first field at mb_info_ptr).
+    // QEMU does NOT reliably set EAX to the PVH magic; the magic lives inside
+    // the struct itself.  Multiboot2 is identified by EAX == 0x36d76289.
+    let is_pvh = mb_info_ptr != 0
+        && unsafe { (mb_info_ptr as *const u32).read() } == XEN_HVM_START_MAGIC;
 
-    impl MemoryManagement for IdentityMem {
+    debug_serial_putchar(b' ');
+    debug_serial_putchar(if is_pvh { b'P' } else { b'M' });
+    debug_serial_putchar(b'\r');
+    debug_serial_putchar(b'\n');
+
+    if is_pvh {
+        // ---- PVH boot path -----------------------------------------------
+        // EBX → hvm_start_info; extract cmdline and first initrd module.
+        let info = unsafe { &*(mb_info_ptr as *const HvmStartInfo) };
+
+        debug_serial_putchar(b'C');
+        debug_serial_putchar(b'P');
+        debug_serial_putchar(b':');
+        debug_serial_puthex_addr(info.cmdline_paddr as usize);
+        debug_serial_putchar(b'\r');
+        debug_serial_putchar(b'\n');
+
+        if info.cmdline_paddr != 0 {
+            let cmdline = unsafe {
+                let ptr = info.cmdline_paddr as *const u8;
+                let mut len = 0usize;
+                while *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
+            };
+            store_cmdline_raw(cmdline);
+        }
+
+        if info.nr_modules > 0 && info.modlist_paddr != 0 {
+            let entry = unsafe { &*(info.modlist_paddr as *const HvmModlistEntry) };
+            debug_serial_putchar(b'I');
+            debug_serial_putchar(b'R');
+            debug_serial_putchar(b':');
+            debug_serial_puthex_addr(entry.paddr as usize);
+            debug_serial_putchar(b'+');
+            debug_serial_puthex_addr(entry.size as usize);
+            debug_serial_putchar(b'\r');
+            debug_serial_putchar(b'\n');
+            let start = PA::from_value(entry.paddr as usize);
+            let size = entry.size as usize;
+            INITRD_REGION.set(PhysMemoryRegion::new(start, size)).ok();
+        } else {
+            debug_serial_putchar(b'I');
+            debug_serial_putchar(b'R');
+            debug_serial_putchar(b':');
+            debug_serial_putchar(b'N');
+            debug_serial_putchar(b'O');
+            debug_serial_putchar(b'N');
+            debug_serial_putchar(b'E');
+            debug_serial_putchar(b'\r');
+            debug_serial_putchar(b'\n');
+        }
+    } else {
+        // ---- Multiboot2 boot path ----------------------------------------
+        // boot_magic == 0x36d76289 if QEMU passed multiboot2 magic; fall
+        // through here for any non-PVH case.
+        struct IdentityMem;
+
+        impl MemoryManagement for IdentityMem {
+            unsafe fn paddr_to_slice(&self, addr: PAddr, size: usize) -> Option<&'static [u8]> {
+                unsafe { Some(core::slice::from_raw_parts(addr as *const u8, size)) }
+            }
+            unsafe fn allocate(&mut self, _size: usize) -> Option<(PAddr, &mut [u8])> {
+                None
+            }
+            unsafe fn deallocate(&mut self, _addr: PAddr) {}
+        }
+
+        let mut mem = IdentityMem;
+        let boot_info = if mb_info_ptr != 0 {
+            unsafe { Multiboot::from_ptr(mb_info_ptr as PAddr, &mut mem) }
+        } else {
+            None
+        };
+
+        if let Some(ref info) = boot_info {
+            if let Some(mut modules) = info.modules() {
+                if let Some(module) = modules.next() {
+                    let start = PA::from_value(module.start as usize);
+                    let size = (module.end - module.start) as usize;
+                    INITRD_REGION.set(PhysMemoryRegion::new(start, size)).ok();
+                }
+            }
+
+            let cmdline = info
+                .command_line()
+                .unwrap_or("");
+            store_cmdline_raw(cmdline);
+        }
+    }
+
+    // Snapshot the boot_info for the Multiboot2 memory-map walk below.
+    // Re-derive it from mb_info_ptr so both branches can share the code.
+    struct IdentityMem2;
+    impl MemoryManagement for IdentityMem2 {
         unsafe fn paddr_to_slice(&self, addr: PAddr, size: usize) -> Option<&'static [u8]> {
             unsafe { Some(core::slice::from_raw_parts(addr as *const u8, size)) }
         }
-        unsafe fn allocate(&mut self, _size: usize) -> Option<(PAddr, &mut [u8])> {
-            None
-        }
+        unsafe fn allocate(&mut self, _size: usize) -> Option<(PAddr, &mut [u8])> { None }
         unsafe fn deallocate(&mut self, _addr: PAddr) {}
     }
-
-    let mut mem = IdentityMem;
-    let boot_info = if mb_info_valid {
-        unsafe { Multiboot::from_ptr(mb_info_ptr as PAddr, &mut mem) }
+    let mut mem2 = IdentityMem2;
+    let boot_info = if !is_pvh && mb_info_ptr != 0 {
+        unsafe { Multiboot::from_ptr(mb_info_ptr as PAddr, &mut mem2) }
     } else {
         None
     };
-
-    // Extract initrd and cmdline only if multiboot info is valid
-    if let Some(ref info) = boot_info {
-        // Remember the first module (initrd)
-        if let Some(mut modules) = info.modules() {
-            if let Some(module) = modules.next() {
-                let start = PA::from_value(module.start as usize);
-                let size = (module.end - module.start) as usize;
-                INITRD_REGION.set(PhysMemoryRegion::new(start, size)).ok();
-            }
-        }
-
-        // Extract cmdline
-        let cmdline = info
-            .command_line()
-            .map(|s| alloc::string::String::from(s))
-            .unwrap_or_default();
-        BOOT_CMDLINE.set(cmdline).ok();
-    }
 
     // Set up page tables (also maps LAPIC MMIO)
     bootstrap_memory(_image_start, _image_end);
@@ -264,7 +404,7 @@ pub extern "C" fn arch_init_stage1(
         let alloc = alloc.as_mut().unwrap();
 
         if let Some(ref info) = boot_info {
-            // Try to get memory regions from multiboot info
+            // Try to get memory regions from multiboot2 info
             if let Some(regions) = info.memory_regions() {
                 for entry in regions {
                     if entry.memory_type() == MultibootMemoryType::Available {
@@ -275,6 +415,8 @@ pub extern "C" fn arch_init_stage1(
                 }
             }
         }
+        // PVH boot does not provide a Multiboot2 memory map; the fallback
+        // 256 MB region below covers the QEMU default.
 
         // If no memory was added (or multiboot info invalid), use default/builtin memory map
         // This provides memory from 1MB to 256MB for QEMU -kernel mode
@@ -309,6 +451,11 @@ pub extern "C" fn arch_init_stage1(
                     let _ = alloc.add_reservation(PhysMemoryRegion::new(start, size));
                 }
             }
+        }
+
+        // For PVH boot, reserve the initrd region we extracted earlier.
+        if let Some(region) = INITRD_REGION.get().copied() {
+            let _ = alloc.add_reservation(region);
         }
 
         unsafe {
@@ -390,8 +537,8 @@ pub fn arch_init_stage2() {
 
     log::info!("x86_64: boot stage 2 complete");
 
-    // Build cmdline from multiboot command line
-    let cmdline_str = BOOT_CMDLINE.get().cloned().unwrap_or_default();
+    // Build cmdline string now that the heap is initialized.
+    let cmdline_str = load_cmdline_string();
 
     crate::kmain(cmdline_str, core::ptr::null_mut());
 
@@ -402,7 +549,12 @@ pub fn arch_init_stage2() {
 }
 
 pub fn get_cmdline() -> Option<String> {
-    BOOT_CMDLINE.get().cloned()
+    let len = BOOT_CMDLINE_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    if len == 0 {
+        None
+    } else {
+        Some(load_cmdline_string())
+    }
 }
 
 pub fn setup_serial() {
