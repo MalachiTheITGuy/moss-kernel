@@ -4,8 +4,8 @@ use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
 use libkernel::arch::arm64::memory::pg_descriptors::MemoryType;
 use libkernel::arch::arm64::memory::pg_tables::{
-    L0Table, MapAttributes, MappingContext, PageAllocator, PageTableMapper, PgTable, PgTableArray,
-    map_range,
+    map_range, L0Table, MapAttributes, MappingContext, PageAllocator, PageTableMapper, PgTable,
+    PgTableArray,
 };
 use libkernel::arch::arm64::memory::tlb::NullTlbInvalidator;
 use libkernel::error::{KernelError, Result};
@@ -200,5 +200,9 @@ pub extern "C" fn enable_mmu(idmap_l0: PA, highmem_l0: PA) {
 pub extern "C" fn paging_bootstrap(static_pages: PA, image_phys_addr: PA, fdt_addr: PA) -> PA {
     let res = do_paging_bootstrap(static_pages, image_phys_addr, fdt_addr);
 
-    if let Ok(addr) = res { addr } else { park_cpu() }
+    if let Ok(addr) = res {
+        addr
+    } else {
+        park_cpu()
+    }
 }

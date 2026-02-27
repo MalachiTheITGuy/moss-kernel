@@ -21,7 +21,7 @@ use alloc::sync::Arc;
 use libkernel::{
     CpuOps, VirtualMemory,
     error::Result,
-    memory::address::{UA, VA},
+    memory::{address::{UA, VA}, region::PhysMemoryRegion},
 };
 
 pub trait Arch: CpuOps + VirtualMemory {
@@ -42,6 +42,15 @@ pub trait Arch: CpuOps + VirtualMemory {
     /// execution at the specified `entry_point`.
     fn new_user_context(entry_point: VA, stack_top: VA) -> Self::UserContext;
 
+    /// Sets the return value of a system call in the user context.
+    fn set_user_return_value(context: &mut Self::UserContext, val: usize);
+
+    /// Sets the user-space stack pointer in the user context.
+    fn set_user_stack(context: &mut Self::UserContext, sp: VA);
+
+    /// Sets the thread-local storage (TLS) area in the user context.
+    fn set_user_thread_area(context: &mut Self::UserContext, area: VA);
+
     /// Switch the current CPU's context to `new`, setting `new` to be the next
     /// task to be executed.
     fn context_switch(new: Arc<Task>);
@@ -56,6 +65,14 @@ pub trait Arch: CpuOps + VirtualMemory {
     fn restart() -> !;
 
     fn get_cmdline() -> Option<String>;
+
+    /// Returns the physical memory region of the initrd/ramdisk, if one was
+    /// provided to the kernel by the bootloader.
+    ///
+    /// Returns `None` if no initrd was provided.
+    fn get_initrd() -> Option<PhysMemoryRegion> {
+        None
+    }
 
     /// Call a user-specified signal handler in the current process.
     fn do_signal(
@@ -202,3 +219,23 @@ mod arm64;
 
 #[cfg(target_arch = "aarch64")]
 pub use self::arm64::Aarch64 as ArchImpl;
+
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
+#[cfg(target_arch = "x86_64")]
+pub use self::x86_64::X86_64 as ArchImpl;
+
+/// Write a byte to the debug serial port (COM1: 0x3F8) for early boot debugging.
+/// No-op on non-x86_64 architectures.
+#[inline(always)]
+pub fn debug_serial_putchar(c: u8) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = c;
+}

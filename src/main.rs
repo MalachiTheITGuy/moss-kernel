@@ -16,20 +16,17 @@ use alloc::{
     vec::Vec,
 };
 use arch::{Arch, ArchImpl};
+use arch::debug_serial_putchar;
 use core::panic::PanicInfo;
-use drivers::{fdt_prober::get_fdt, fs::register_fs_drivers};
+use drivers::fs::register_fs_drivers;
 use fs::VFS;
-use getargs::{Opt, Options};
 use libkernel::{
     CpuOps, VirtualMemory,
     fs::{
         BlockDevice, OpenFlags, attr::FilePermissions, blk::ramdisk::RamdiskBlkDev, path::Path,
         pathbuf::PathBuf,
     },
-    memory::{
-        address::{PA, VA},
-        region::PhysMemoryRegion,
-    },
+    memory::address::VA,
 };
 use log::{error, warn};
 use process::ctx::UserCtx;
@@ -53,6 +50,41 @@ mod sched;
 mod sync;
 #[cfg(test)]
 pub mod testing;
+
+// Override the C `memcpy` symbol so we can catch bad copies during early
+// userspace setup.  The compiler inserts calls to `memcpy` for things like
+// `copy_from_slice` and other bulk memory moves, and a null destination is a
+// common source of kernel page faults.  By providing our own implementation we
+// log each invocation and, when the destination is null, panic with the
+// caller's return address so we can track down the origin.
+
+pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    // Grab the return address from the stack directly.  When the
+    // function is entered the return pointer is stored at *rsp* per the
+    // SysV AMD64 ABI.
+    let caller: usize;
+    unsafe {
+        core::arch::asm!(
+            "mov {ret}, [rsp]",
+            ret = out(reg) caller,
+        );
+    }
+    log::error!(
+        "memcpy called from {:#x}, dest={:?}, src={:?}, n={}",
+        caller,
+        dest,
+        src,
+        n
+    );
+    if dest.is_null() {
+        if n != 0 {
+            panic!("memcpy with null destination (called from {:#x})", caller);
+        }
+    } else if n != 0 {
+        unsafe { core::ptr::copy_nonoverlapping(src, dest, n) };
+    }
+    dest
+}
 
 #[panic_handler]
 fn on_panic(info: &PanicInfo) -> ! {
@@ -80,22 +112,7 @@ async fn launch_init(mut opts: KOptions) {
         .init
         .unwrap_or_else(|| panic!("No init specified in kernel command line"));
 
-    let dt = get_fdt();
-
-    let initrd_block_dev: Option<Box<dyn BlockDevice>> = if let Some(chosen) =
-        dt.find_nodes("/chosen").next()
-        && let Some(start_addr) = chosen
-            .find_property("linux,initrd-start")
-            .map(|prop| prop.u64())
-        && let Some(end_addr) = chosen
-            .find_property("linux,initrd-end")
-            .map(|prop| prop.u64())
-    {
-        let region = PhysMemoryRegion::from_start_end_address(
-            PA::from_value(start_addr as _),
-            PA::from_value(end_addr as _),
-        );
-
+    let initrd_block_dev: Option<Box<dyn BlockDevice>> = if let Some(region) = ArchImpl::get_initrd() {
         Some(Box::new(
             RamdiskBlkDev::new(
                 region,
@@ -158,27 +175,41 @@ async fn launch_init(mut opts: KOptions) {
         let mut fd_table = task.fd_table.lock_save_irq();
 
         // stdin, stdout, stderr
+        log::debug!("inserting stdin console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
+        log::debug!("inserting stdout console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
+        log::debug!("inserting stderr console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
+        log::debug!("done inserting fds");
     }
 
     #[cfg(test)]
     test_main();
 
+    log::debug!("about to drop task");
     drop(task);
+    log::debug!("dropped task");
 
+    log::debug!("building init_args");
     let mut init_args = vec![init.as_str().to_string()];
+    log::debug!("built init_args");
+    log::debug!("appending opts.init_args (len={})", opts.init_args.len());
+    init_args.append(&mut opts.init_args);
+    log::debug!("appended init_args, total len={}", init_args.len());
 
     init_args.append(&mut opts.init_args);
 
-    process::exec::kernel_exec(init.as_path(), inode, init_args, vec![])
+    log::debug!("about to exec init: path={:?} args={:?}", init.as_path(), init_args);
+    let exec_fut = process::exec::kernel_exec(init.as_path(), inode, init_args, vec![]);
+    log::debug!("created exec future");
+    exec_fut
         .await
         .expect("Could not launch init process");
 }
@@ -198,39 +229,70 @@ fn parse_args(args: &str) -> KOptions {
         init_args: Vec::new(),
     };
 
-    let mut opts = Options::new(args.split(" "));
+    let mut iter = args.split_whitespace().peekable();
+    while let Some(token) = iter.next() {
+        if !token.starts_with("--") {
+            continue;
+        }
 
-    loop {
-        match opts.next_opt() {
-            Ok(Some(arg)) => match arg {
-                Opt::Long("init") => kopts.init = Some(PathBuf::from(opts.value().unwrap())),
-                Opt::Long("init-arg") => kopts.init_args.push(opts.value().unwrap().to_string()),
-                Opt::Long("rootfs") => kopts.root_fs = Some(opts.value().unwrap().to_string()),
-                Opt::Long("automount") => {
-                    let string = opts.value().unwrap();
-                    let mut split = string.split(",");
-                    let path = split.next().unwrap();
-                    let fs = split.next().unwrap();
-
-                    kopts.automounts.push((PathBuf::from(path), fs.to_string()));
+        // support `--key=value` or `--key value`
+        let mut parts = token[2..].splitn(2, '=');
+        let key = parts.next().unwrap();
+        let value = parts.next().map(|s| s.to_string()).or_else(|| {
+            // try to get next token as value if it doesn't start with `--`
+            if let Some(next) = iter.peek() {
+                if !next.starts_with("--") {
+                    return Some(iter.next().unwrap().to_string());
                 }
-                Opt::Long(x) => warn!("Unknown option {x}"),
-                Opt::Short(x) => warn!("Unknown option {x}"),
-            },
-            Ok(None) => return kopts,
-            Err(e) => error!("Could not parse option: {e}, ignoring."),
+            }
+            None
+        });
+
+        match key {
+            "init" => {
+                if let Some(v) = value {
+                    kopts.init = Some(PathBuf::from(v));
+                }
+            }
+            "init-arg" => {
+                if let Some(v) = value {
+                    kopts.init_args.push(v);
+                }
+            }
+            "rootfs" => {
+                if let Some(v) = value {
+                    kopts.root_fs = Some(v);
+                }
+            }
+            "automount" => {
+                if let Some(v) = value {
+                    let mut split = v.split(',');
+                    if let (Some(path), Some(fs)) = (split.next(), split.next()) {
+                        kopts.automounts.push((PathBuf::from(path), fs.to_string()));
+                    }
+                }
+            }
+            other => {
+                warn!("Unknown option {}", other);
+            }
         }
     }
+
+    kopts
 }
 
 pub fn kmain(args: String, ctx_frame: *mut UserCtx) {
     sched_init();
+    debug_serial_putchar(b'M');
 
     register_fs_drivers();
+    debug_serial_putchar(b'N');
 
     let kopts = parse_args(&args);
+    debug_serial_putchar(b'O');
 
     spawn_kernel_work(launch_init(kopts));
+    debug_serial_putchar(b'P');
 
     dispatch_userspace_task(ctx_frame);
 }

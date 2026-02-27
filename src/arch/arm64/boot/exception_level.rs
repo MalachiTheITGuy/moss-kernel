@@ -1,7 +1,7 @@
 use super::park_cpu;
 use aarch64_cpu::asm;
 use aarch64_cpu::registers::{
-    CurrentEL, ELR_EL2, ELR_EL3, HCR_EL2, Readable, SCR_EL3, SP_EL1, SPSR_EL2, SPSR_EL3, Writeable,
+    CurrentEL, Readable, Writeable, ELR_EL2, ELR_EL3, HCR_EL2, SCR_EL3, SPSR_EL2, SPSR_EL3, SP_EL1,
 };
 use core::arch::asm;
 

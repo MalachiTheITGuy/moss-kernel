@@ -52,6 +52,7 @@ use libkernel::{
 
 //pub mod bcm2835_aux;
 pub mod imx_lp;
+pub mod ns16550;
 pub mod pl011;
 
 /// A trait for low-level, hardware-specific UART drivers.
@@ -174,9 +175,13 @@ struct UartInstance {
 
 impl OpenableDevice for UartInstance {
     fn open(&self, flags: OpenFlags) -> Result<Arc<OpenFile>> {
+        log::debug!("UartInstance::open flags={:?}", flags);
         let tty = Tty::new(self.driver.clone())?;
+        log::debug!("UartInstance::open created Tty");
 
-        Ok(Arc::new(OpenFile::new(Box::new(tty), flags)))
+        let of = Arc::new(OpenFile::new(Box::new(tty), flags));
+        log::debug!("UartInstance::open returning OpenFile");
+        Ok(of)
     }
 }
 
@@ -196,7 +201,7 @@ impl UartCharDev {
         self.next_instance.fetch_add(1, Ordering::SeqCst)
     }
 
-    fn register_console(
+    pub fn register_console(
         &self,
         driver: Arc<dyn Console>,
         active_console: bool,
@@ -244,6 +249,20 @@ pub fn uart_init(_bus: &mut PlatformBus, dm: &mut DriverManager) -> Result<()> {
     dm.register_char_driver(ReservedMajors::Uart as _, cdev)
 }
 
-static UART_CHAR_DEV: OnceLock<Arc<UartCharDev>> = OnceLock::new();
+pub static UART_CHAR_DEV: OnceLock<Arc<UartCharDev>> = OnceLock::new();
+
+
+/// Register a UART instance as a character device and optionally make it the
+/// active console.  Returns the allocated `CharDevDescriptor`.
+pub fn register_uart_console(
+    driver: Arc<dyn Console>,
+    active_console: bool,
+) -> Result<CharDevDescriptor> {
+    if let Some(cdev) = UART_CHAR_DEV.get() {
+        cdev.register_console(driver, active_console)
+    } else {
+        Err(KernelError::InvalidValue)
+    }
+}
 
 kernel_driver!(uart_init);

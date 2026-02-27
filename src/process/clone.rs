@@ -14,8 +14,9 @@ use core::sync::atomic::AtomicUsize;
 use libkernel::memory::address::TUA;
 use libkernel::{
     error::{KernelError, Result},
-    memory::address::UA,
+    memory::address::{UA, VA},
 };
+use crate::arch::{Arch, ArchImpl};
 use ringbuf::Arc;
 
 pub static NUM_FORKS: AtomicUsize = AtomicUsize::new(0);
@@ -67,12 +68,11 @@ pub async fn sys_clone(
 
         let mut user_ctx = *current_task.ctx.user();
 
-        // TODO: Make this arch independent. The child returns '0' on clone.
-        user_ctx.x[0] = 0;
+        // The child returns '0' on clone.
+        ArchImpl::set_user_return_value(&mut user_ctx, 0);
 
         if flags.contains(CloneFlags::CLONE_SETTLS) {
-            // TODO: Make this arch independent.
-            user_ctx.tpid_el0 = tls as _;
+            ArchImpl::set_user_thread_area(&mut user_ctx, VA::from_value(tls));
         }
 
         let (tg, tid) = if flags.contains(CloneFlags::CLONE_THREAD) {
@@ -81,7 +81,7 @@ pub async fn sys_clone(
                 // set.
                 return Err(KernelError::InvalidValue);
             }
-            user_ctx.sp_el0 = newsp.value() as _;
+            ArchImpl::set_user_stack(&mut user_ctx, VA::from_value(newsp.value()));
 
             (
                 // A new task within this thread group.

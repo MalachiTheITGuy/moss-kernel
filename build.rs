@@ -5,6 +5,7 @@ use time::macros::format_description;
 fn main() {
     let linker_script = match std::env::var("CARGO_CFG_TARGET_ARCH") {
         Ok(arch) if arch == "aarch64" => PathBuf::from("./src/arch/arm64/boot/linker.ld"),
+        Ok(arch) if arch == "x86_64" => PathBuf::from("./src/arch/x86_64/boot/linker.ld"),
         Ok(arch) => {
             println!("Unsupported arch: {arch}");
             std::process::exit(1);
@@ -14,6 +15,14 @@ fn main() {
 
     println!("cargo::rerun-if-changed={}", linker_script.display());
     println!("cargo::rustc-link-arg=-T{}", linker_script.display());
+
+    // Compile start.s for x86_64 using cc
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+        println!("cargo::rerun-if-changed=src/arch/x86_64/boot/start.s");
+        cc::Build::new()
+            .file("src/arch/x86_64/boot/start.s")
+            .compile("x86_64_boot");
+    }
 
     // Set an environment variable with the date and time of the build
     let now = OffsetDateTime::now_utc();

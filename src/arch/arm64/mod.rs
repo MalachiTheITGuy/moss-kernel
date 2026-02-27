@@ -92,6 +92,18 @@ impl Arch for Aarch64 {
         }
     }
 
+    fn set_user_return_value(context: &mut Self::UserContext, val: usize) {
+        context.x[0] = val as _;
+    }
+
+    fn set_user_stack(context: &mut Self::UserContext, sp: VA) {
+        context.sp_el0 = sp.value() as _;
+    }
+
+    fn set_user_thread_area(context: &mut Self::UserContext, area: VA) {
+        context.tpid_el0 = area.value() as _;
+    }
+
     fn name() -> &'static str {
         "aarch64"
     }
@@ -143,6 +155,20 @@ impl Arch for Aarch64 {
 
     fn get_cmdline() -> Option<String> {
         fdt::get_cmdline()
+    }
+
+    fn get_initrd() -> Option<libkernel::memory::region::PhysMemoryRegion> {
+        use crate::drivers::fdt_prober::get_fdt;
+        use libkernel::memory::address::PA;
+        use libkernel::memory::region::PhysMemoryRegion;
+        let dt = get_fdt();
+        let chosen = dt.find_nodes("/chosen").next()?;
+        let start = chosen.find_property("linux,initrd-start")?.u64();
+        let end = chosen.find_property("linux,initrd-end")?.u64();
+        Some(PhysMemoryRegion::from_start_end_address(
+            PA::from_value(start as _),
+            PA::from_value(end as _),
+        ))
     }
 
     unsafe fn copy_from_user(

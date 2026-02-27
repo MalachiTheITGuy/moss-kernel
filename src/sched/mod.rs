@@ -1,4 +1,5 @@
 use crate::arch::ArchImpl;
+use crate::arch::debug_serial_putchar;
 use crate::drivers::timer::{Instant, now};
 #[cfg(feature = "smp")]
 use crate::interrupts::cpu_messenger::{Message, message_cpu};
@@ -388,6 +389,9 @@ pub fn sched_init() {
     insert_task(Box::new(init_task));
 
     schedule();
+
+    // Debug: indicate sched_init completed
+    debug_serial_putchar(b'M');
 }
 
 pub fn sched_init_secondary() {

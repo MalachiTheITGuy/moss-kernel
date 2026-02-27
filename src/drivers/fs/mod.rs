@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
-use cgroup::CgroupFsDriver;
 use dev::DevFsDriver;
 use ext4::Ext4FsDriver;
 use fat32::Fat32FsDriver;
+use tmpfs::TmpFsDriver;
 use proc::ProcFsDriver;
 use sys::SysFsDriver;
-use tmpfs::TmpFsDriver;
+use cgroup::CgroupFsDriver;
 
 use super::DM;
 
@@ -23,8 +23,8 @@ pub fn register_fs_drivers() {
     dm.insert_driver(Arc::new(Ext4FsDriver::new()));
     dm.insert_driver(Arc::new(Fat32FsDriver::new()));
     dm.insert_driver(Arc::new(DevFsDriver::new()));
-    dm.insert_driver(Arc::new(ProcFsDriver::new()));
-    dm.insert_driver(Arc::new(SysFsDriver::new()));
     dm.insert_driver(Arc::new(TmpFsDriver::new()));
-    dm.insert_driver(Arc::new(CgroupFsDriver::new()));
+    dm.insert_driver(Arc::new(ProcFsDriver));
+    dm.insert_driver(Arc::new(SysFsDriver));
+    dm.insert_driver(Arc::new(CgroupFsDriver));
 }
