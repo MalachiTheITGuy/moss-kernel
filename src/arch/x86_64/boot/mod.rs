@@ -181,22 +181,10 @@ pub fn bootstrap_memory(image_start: usize, image_end: usize) {
 
 
 
-    // 4. Identity-map LAPIC MMIO (physical 0xFEE00000) so interrupts::init() can access it
-    map_range(
-        pml4_pa,
-        MapAttributes {
-            phys: PhysMemoryRegion::new(PA::from_value(0xFEE00000), 4096),
-            virt: VirtMemoryRegion::new(VA::from_value(0xFEE00000), 4096),
-            mem_type: MemoryType::Normal,
-            perms: PtePermissions::rw(false),
-        },
-        &mut ctx,
-    )
-    .unwrap();
-
-
-
-
+    // Note: The LAPIC at physical 0xFEE0_0000 is accessible via the linear map at
+    // 0xffff_8000_fee0_0000 (PAGE_OFFSET + phys). No separate identity map is needed;
+    // using upper-half addresses ensures the mapping survives CR3 switches to
+    // process page tables (which only copy upper-half PML4 entries 256–511).
 
     // Load new CR3
     unsafe {
@@ -300,6 +288,17 @@ pub extern "C" fn arch_init_stage1(
         let kernel_image_phys_start = PA::from_value(_image_start - 0xffffffff80000000);
         let kernel_image_size = _image_end - _image_start;
         let _ = alloc.add_reservation(PhysMemoryRegion::new(kernel_image_phys_start, kernel_image_size));
+
+        // Also reserve the local APIC region here to be doubly sure.  The
+        // initial allocator may already have reserved it above, but once we
+        // transition to the full page allocator we still want to make sure
+        // the APIC space isn't used as normal RAM.
+        const LOCAL_APIC_PHYS: usize = 0xFEE0_0000;
+        const LOCAL_APIC_SIZE: usize = 0x1000;
+        let _ = alloc.add_reservation(PhysMemoryRegion::new(
+            PA::from_value(LOCAL_APIC_PHYS),
+            LOCAL_APIC_SIZE,
+        ));
 
         // Reserve all multiboot modules (initrd) if available
         if let Some(ref info) = boot_info {

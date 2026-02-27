@@ -89,6 +89,18 @@ pub fn setup_allocator(boot_info: &BootInformation) {
         ));
     }
 
+    // Reserve the local APIC MMIO region so the allocator never hands out
+    // pages that overlap the hardware registers.  Without this reservation
+    // we have seen the heap return 0xFEE0_0000 as an allocation, which
+    // subsequently causes a page fault when the kernel writes to it.
+    // The APIC occupies at least one page; reserve 0x1000 bytes to be safe.
+    const LOCAL_APIC_PHYS: usize = 0xFEE0_0000;
+    const LOCAL_APIC_SIZE: usize = 0x1000;
+    let _ = smalloc.add_reservation(PhysMemoryRegion::new(
+        PA::from_value(LOCAL_APIC_PHYS),
+        LOCAL_APIC_SIZE,
+    ));
+
     // Permit reallocs
     smalloc.permit_reallocs();
 }

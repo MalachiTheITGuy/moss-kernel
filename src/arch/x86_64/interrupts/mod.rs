@@ -6,6 +6,11 @@ use crate::interrupts::InterruptManager;
 use x86_64::VirtAddr;
 use crate::per_cpu_private;
 
+/// Virtual address of the Local APIC MMIO registers.
+/// Mapped via the kernel's linear map: PAGE_OFFSET (0xffff_8000_0000_0000) + physical 0xFEE0_0000.
+/// This is in the upper half and is therefore shared across all process page tables.
+const LAPIC_VIRT_BASE: u64 = 0xffff_8000_fee0_0000;
+
 pub mod apic;
 use self::apic::{LocalApic, ApicTimer};
 
@@ -33,7 +38,7 @@ impl X86InterruptController {
             );
         }
 
-        let lapic = LocalApic::new(VirtAddr::new(0xFEE00000));
+        let lapic = LocalApic::new(VirtAddr::new(LAPIC_VIRT_BASE));
         lapic.init();
         Self { lapic }
     }
@@ -69,7 +74,7 @@ impl InterruptController for X86InterruptController {
         let vector = PENDING_VECTOR.borrow_mut().take()?;
         Some(Box::new(X86InterruptContext {
             vector,
-            lapic: LocalApic::new(VirtAddr::new(0xFEE00000)),
+            lapic: LocalApic::new(VirtAddr::new(LAPIC_VIRT_BASE)),
         }))
     }
 
@@ -95,7 +100,7 @@ pub fn init() {
     crate::interrupts::set_interrupt_root(manager);
     
     // Initialize timer
-    let lapic = LocalApic::new(VirtAddr::new(0xFEE00000));
+    let lapic = LocalApic::new(VirtAddr::new(LAPIC_VIRT_BASE));
     lapic.setup_timer(0x20);
     crate::drivers::timer::set_sys_timer(Arc::new(ApicTimer::new(lapic)));
 }

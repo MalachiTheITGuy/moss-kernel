@@ -31,6 +31,11 @@ impl Display for ExceptionState {
             f,
             "RIP: 0x{:016x} RSP: 0x{:016x} RFLAGS: 0x{:016x} VEC: {}\n",
             self.rip, self.rsp, self.rflags, self.vector
+        )?;
+        write!(
+            f,
+            "ERR: 0x{:016x}\n",
+            self.error_code
         )
     }
 }
@@ -83,8 +88,18 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         // Signal EOI if it's an APIC interrupt
         // For now, we'll just assume it's handled.
     } else {
-        log::error!("x86_64 exception occurred:\n{}", state_ref);
-
+        // Fetch the faulting address if this is a page fault so we have
+        // something concrete to debug with.  The `read()` helper returns a
+        // `Result` because some crate configurations make `VirtAddr` validation
+        // fallible; ignore that possibility here since there is nothing we can
+        // do about it during a panic.
+        let cr2 = x86_64::registers::control::Cr2::read()
+            .unwrap_or(x86_64::VirtAddr::new(0));
+        log::error!(
+            "x86_64 exception occurred:\n{}CR2: 0x{:016x}\n",
+            state_ref,
+            cr2.as_u64()
+        );
         if state_ref.cs & 0x3 == 0 {
             panic!("Kernel exception");
         }
