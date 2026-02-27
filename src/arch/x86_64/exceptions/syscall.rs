@@ -98,7 +98,7 @@ use libkernel::{
     error::{KernelError, syscall_error::kern_err_to_syscall},
     memory::address::{TUA, UA, VA},
 };
-use super::ExceptionState;
+use super::{ExceptionState, read_fs_base, write_fs_base};
 
 pub async fn handle_syscall() {
     current_task().update_accounting(None);
@@ -200,12 +200,21 @@ async fn sys_arch_prctl(code: i32, _addr: u64) -> libkernel::error::Result<usize
 
 #[unsafe(no_mangle)]
 pub extern "C" fn x86_64_syscall_handler(state: *mut ExceptionState) -> *mut ExceptionState {
+    // Syscalls always come from user space.  Save the current FS_BASE MSR into
+    // the exception frame (the assembly stub pushed a $0 placeholder).
+    unsafe { (*state).fs_base = read_fs_base() };
+
     let mut task = current_task();
     task.ctx.save_user_ctx(state);
     
     spawn_kernel_work(handle_syscall());
     
     dispatch_userspace_task(state);
-    
+
+    // Restore FS_BASE for whichever task dispatch_userspace_task chose to run.
+    // restore_user_ctx has already written its ExceptionState (including fs_base)
+    // into the stack frame; we apply that value to the MSR now.
+    write_fs_base(unsafe { (*state).fs_base });
+
     state
 }

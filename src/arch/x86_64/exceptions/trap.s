@@ -20,9 +20,11 @@
     pushq %rdx
     pushq %rcx
     pushq %rax
+    pushq $0    # fs_base slot (populated by Rust handler from IA32_FS_BASE MSR)
 .endm
 
 .macro POP_REGS
+    addq $8, %rsp   # skip fs_base (Rust handler writes it to IA32_FS_BASE MSR)
     popq %rax
     popq %rcx
     popq %rdx

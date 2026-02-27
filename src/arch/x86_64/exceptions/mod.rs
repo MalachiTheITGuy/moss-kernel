@@ -8,6 +8,7 @@ use x86_64::{PrivilegeLevel, VirtAddr};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ExceptionState {
+    pub fs_base: u64,                                                              // FS_BASE MSR (saved by Rust handler, slot pushed by PUSH_REGS)
     pub rax: u64, pub rcx: u64, pub rdx: u64, pub rbx: u64, pub rbp: u64,
     pub rsi: u64, pub rdi: u64, pub r8: u64, pub r9: u64, pub r10: u64,
     pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
@@ -41,6 +42,37 @@ impl Display for ExceptionState {
 }
 
 global_asm!(include_str!("trap.s"));
+
+/// Read the IA32_FS_BASE MSR (user-space FS segment base).
+#[inline]
+fn read_fs_base() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0xC0000100u32,
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, nomem),
+        );
+    }
+    (hi as u64) << 32 | lo as u64
+}
+
+/// Write the IA32_FS_BASE MSR (user-space FS segment base).
+#[inline]
+pub fn write_fs_base(val: u64) {
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC0000100u32,
+            in("eax") (val & 0xFFFF_FFFF) as u32,
+            in("edx") (val >> 32) as u32,
+            options(nostack, nomem),
+        );
+    }
+}
 
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
@@ -76,6 +108,13 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut ExceptionState {
     let state_ref = unsafe { state.as_mut().unwrap() };
+
+    // Save the user FS_BASE from the MSR when coming from user space.
+    // The assembly stub pushed a placeholder $0; fill it with the real value.
+    let from_user = state_ref.cs & 0x3 != 0;
+    if from_user {
+        state_ref.fs_base = read_fs_base();
+    }
     
     let vector = state_ref.vector;
     
@@ -176,6 +215,11 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         if state_ref.cs & 0x3 == 0 {
             panic!("Kernel exception");
         }
+    }
+
+    // Restore the user FS_BASE MSR when returning to user space.
+    if from_user {
+        write_fs_base(state_ref.fs_base);
     }
 
     state

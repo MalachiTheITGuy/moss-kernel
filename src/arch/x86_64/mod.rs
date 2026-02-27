@@ -53,6 +53,7 @@ impl crate::arch::Arch for X86_64 {
 
     fn new_user_context(entry_point: VA, stack_top: VA) -> Self::UserContext {
         ExceptionState {
+            fs_base: 0,
             rax: 0, rcx: 0, rdx: 0, rbx: 0, rbp: 0, rsi: 0, rdi: 0,
             r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
             vector: 0,
@@ -73,8 +74,11 @@ impl crate::arch::Arch for X86_64 {
         context.rsp = sp.value() as u64;
     }
 
-    fn set_user_thread_area(_context: &mut Self::UserContext, _area: VA) {
-        // TODO: Handle FS_BASE/GS_BASE in Task
+    fn set_user_thread_area(context: &mut Self::UserContext, area: VA) {
+        // Store the TLS base in the saved context; write_fs_base() is called
+        // just before iretq (in x86_64_syscall_handler / x86_64_exception_handler)
+        // so this value will be loaded into IA32_FS_BASE when the thread runs.
+        context.fs_base = area.value() as u64;
     }
 
     fn context_switch(new: Arc<Task>) {

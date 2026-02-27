@@ -41,7 +41,7 @@ impl From<&ExceptionState> for X86_64PtraceGPRegs {
             eflags: value.rflags,
             rsp: value.rsp,
             ss: value.ss,
-            fs_base: 0,
+            fs_base: value.fs_base,
             gs_base: 0,
             ds: 0,
             es: 0,
