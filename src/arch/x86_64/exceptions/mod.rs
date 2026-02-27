@@ -96,6 +96,11 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         let cr2 = x86_64::registers::control::Cr2::read()
             .unwrap_or(x86_64::VirtAddr::new(0));
 
+        // Log extra registers to help diagnose memcpy faults.
+        let rsi = state_ref.rsi;
+        let rdi = state_ref.rdi;
+        log::error!("regs: RSI=0x{:016x} RDI=0x{:016x}", rsi, rdi);
+
         // ── Kernel upper-half PML4 propagation ──────────────────────────────
         // When a new kernel virtual mapping is installed (e.g. for a ramdisk)
         // AFTER a process address space was cloned from the kernel PML4, the

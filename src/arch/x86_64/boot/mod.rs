@@ -578,12 +578,11 @@ pub fn setup_serial() {
         )
         .expect("Failed to claim UART interrupt");
 
-    crate::console::set_active_console(
-        uart.clone(),
-        libkernel::driver::CharDevDescriptor {
-            major: crate::drivers::ReservedMajors::Uart as _,
-            minor: 0,
-        },
-    )
-    .expect("Failed to set active console");
+    // Register this UART instance with the generic UART char driver so
+    // that userspace can open it via /dev/ttyS* (and console).  The
+    // register_console helper allocates a minor number and creates the
+    // corresponding devfs node.
+    // Use the public helper which handles the global static internally.
+    let _desc = crate::drivers::uart::register_uart_console(uart.clone(), true)
+        .expect("Failed to register UART as char device");
 }

@@ -37,20 +37,50 @@ struct ConsoleDev {}
 
 impl OpenableDevice for ConsoleDev {
     fn open(&self, flags: OpenFlags) -> Result<Arc<OpenFile>> {
-        let char_dev_desc = match *CONSOLE.lock_save_irq() {
-            super::ConsoleState::Buffered => return Err(FsError::NoDevice.into()),
-            super::ConsoleState::Device(_, char_dev_descriptor) => char_dev_descriptor,
+        let char_dev_desc = {
+            let state = CONSOLE.lock_save_irq();
+            match *state {
+                super::ConsoleState::Buffered => {
+                    log::debug!("ConsoleDev::open - console still buffered");
+                    return Err(FsError::NoDevice.into());
+                }
+                super::ConsoleState::Device(_, char_dev_descriptor) => char_dev_descriptor,
+            }
+        };
+        log::debug!(
+            "ConsoleDev::open called (flags={:?}) using descriptor {:?}",
+            flags,
+            char_dev_desc
+        );
+
+        // Lookup the underlying char driver while holding DM lock, but drop it
+        // before performing the actual open call so we don't hold the lock during
+        // potentially complex device initialization (which may itself acquire
+        // other locks).
+        let char_driver = {
+            let mut dm_lock = DM.lock_save_irq();
+            let drv_opt = dm_lock.find_char_driver(char_dev_desc.major);
+            drv_opt.map(|arc| arc.clone())
         };
 
-        let char_driver = DM
-            .lock_save_irq()
-            .find_char_driver(char_dev_desc.major)
-            .ok_or(FsError::NoDevice)?;
+        let char_driver = match char_driver {
+            Some(d) => {
+                log::debug!("found char driver for major {}", char_dev_desc.major);
+                d
+            }
+            None => {
+                log::warn!("no char driver for major {}", char_dev_desc.major);
+                return Err(FsError::NoDevice.into());
+            }
+        };
 
-        char_driver
-            .get_device(char_dev_desc.minor)
-            .ok_or(FsError::NoDevice)?
-            .open(flags)
+        if let Some(dev) = char_driver.get_device(char_dev_desc.minor) {
+            log::debug!("found device for minor {}", char_dev_desc.minor);
+            dev.open(flags)
+        } else {
+            log::warn!("no device present for minor {}", char_dev_desc.minor);
+            Err(FsError::NoDevice.into())
+        }
     }
 }
 
