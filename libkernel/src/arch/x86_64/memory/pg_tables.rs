@@ -1,15 +1,46 @@
 use core::marker::PhantomData;
 
+/// Write a nibble (4 bits) as a hex character to the debug serial port
+#[inline(always)]
+fn debug_puthex_nibble(nibble: u8) {
+    let c = if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'A' + nibble - 10
+    };
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
+    }
+}
+
+/// Write a full address (usize) as hex to the debug serial port
+#[inline(always)]
+fn debug_puthex_addr(addr: usize) {
+    let bytes = addr.to_ne_bytes();
+    for byte in bytes.iter().rev() {
+        debug_puthex_nibble((byte >> 4) & 0xF);
+        debug_puthex_nibble(byte & 0xF);
+    }
+}
+
+/// Write a byte to the debug serial port
+#[inline(always)]
+fn debug_putchar(c: u8) {
+    unsafe {
+        core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
+    }
+}
+
 use super::pg_descriptors::{
-    PML4Descriptor, PDPTDescriptor, PDDescriptor, PTDescriptor, MemoryType, PaMapper,
+    MemoryType, PDDescriptor, PDPTDescriptor, PML4Descriptor, PTDescriptor, PaMapper,
     PageTableEntry, TableMapper,
 };
 use crate::error::{MapError, Result};
 use crate::memory::{
-    PAGE_SIZE,
     address::{TPA, TVA, VA},
     permissions::PtePermissions,
     region::{PhysMemoryRegion, VirtMemoryRegion},
+    PAGE_SIZE,
 };
 
 pub const DESCRIPTORS_PER_PAGE: usize = 512;
@@ -151,6 +182,7 @@ where
         let va = attrs.virt.start_address();
 
         let pdpt = map_at_level(pml4_table, va, ctx)?;
+
         if let Some(pgs_mapped) = try_map_pa(pdpt, va, attrs.phys, &attrs, ctx)? {
             attrs.virt = attrs.virt.add_pages(pgs_mapped);
             attrs.phys = attrs.phys.add_pages(pgs_mapped);
@@ -158,6 +190,7 @@ where
         }
 
         let pd = map_at_level(pdpt, va, ctx)?;
+
         if let Some(pgs_mapped) = try_map_pa(pd, va, attrs.phys, &attrs, ctx)? {
             attrs.virt = attrs.virt.add_pages(pgs_mapped);
             attrs.phys = attrs.phys.add_pages(pgs_mapped);
@@ -165,6 +198,7 @@ where
         }
 
         let pt = map_at_level(pd, va, ctx)?;
+
         try_map_pa(pt, va, attrs.phys, &attrs, ctx)?;
 
         attrs.virt = attrs.virt.add_pages(1);
@@ -244,10 +278,7 @@ where
         })?;
 
         ctx.mapper.with_page_table(table, |pgtable| {
-            L::from_ptr(pgtable).set_desc(
-                va,
-                L::Descriptor::new_next_table(new_pa.to_untyped()),
-            );
+            L::from_ptr(pgtable).set_desc(va, L::Descriptor::new_next_table(new_pa.to_untyped()));
         })?;
 
         Ok(new_pa)

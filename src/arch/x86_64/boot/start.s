@@ -33,22 +33,26 @@ _start:
     cli
     cld
 
-    # Early serial debug: write '!' to COM1
-    mov $0x3F8, %dx
-    mov $0x21, %al
-    out %al, %dx
+
 
     # Update stack pointer (physical)
     mov $(__boot_stack - 0xffffffff80000000), %esp
 
-    # Debug: write '@' after setting stack
-    mov $0x3F8, %dx
-    mov $0x40, %al
-    out %al, %dx
 
-    # Check if we were booted by Multiboot2
-    cmp $0x36d76289, %eax
-    jne .error
+
+    # Zero BSS
+    cld
+    mov $(__bss_start - 0xffffffff80000000), %edi
+    mov $(__bss_end - 0xffffffff80000000), %ecx
+    sub %edi, %ecx
+    xor %eax, %eax
+    rep stosb
+
+    # Skip Multiboot check - QEMU -kernel doesn't pass multiboot magic.
+    # The kernel uses PVH entry point via .note.PVH section instead.
+    # For standard Multiboot, use cmp $0x2BADB002, %eax
+    # cmp $0x36d76289, %eax
+    # jne .error
 
     # Bootstrapping page tables
     # PML4[0] -> boot_pdpt (Identity)
@@ -80,34 +84,25 @@ _start:
     dec %ecx
     jnz .fill_pd
 
-    # Debug: write '&' after filling PD
-    mov $0x3F8, %dx
-    mov $0x26, %al
-    out %al, %dx
+
 
     # Load CR3
     mov $(boot_pml4 - 0xffffffff80000000), %eax
     mov %eax, %cr3
 
-    # Debug: write '*' to check if CR3 load reached
-    mov $0x3F8, %dx
-    mov $0x2A, %al
-    out %al, %dx
 
-    # Marker '#'
-    mov $0x3F8, %dx
-    mov $0x23, %al
-    out %al, %dx
+
+
 
     # Enable PAE
     mov %cr4, %eax
     or $(1 << 5), %eax
     mov %eax, %cr4
 
-    # Enable Long Mode in EFER MSR
-    mov $0xc0000080, %ecx
+    # 2. Enable Long Mode and NX in EFER
+    mov $0xC0000080, %ecx
     rdmsr
-    or $(1 << 8), %eax
+    or $(1 << 8) | (1 << 11), %eax # Bit 8: LME (Long Mode Enable), Bit 11: NXE (NX Enable)
     wrmsr
 
     # Enable Paging
@@ -116,20 +111,12 @@ _start:
     mov %eax, %cr0
 
     # Load 64-bit GDT
-    lgdt (gdt64_ptr - 0xffffffff80000000)
+    lgdt (gdt64_ptr_phys - 0xffffffff80000000)
 
-    # Debug: write '^' before ljmp
-    mov $0x3F8, %dx
-    mov $0x5E, %al
-    out %al, %dx
+
 
     # Far jump to 64-bit code
     ljmp $0x8, $(.long_mode - 0xffffffff80000000)
-
-    # Marker '$'
-    mov $0x3F8, %dx
-    mov $0x24, %al
-    out %al, %dx
 
 .error:
     # Just hang
@@ -138,10 +125,15 @@ _start:
 
 .code64
 .long_mode:
-    # Debug: write '+' to confirm long mode reached
-    mov $0x3F8, %dx
-    mov $0x2B, %al
-    out %al, %dx
+    # Transition to the higher half
+    movabsq $.long_mode_high, %rax
+    jmp *%rax
+
+.long_mode_high:
+    # Now running in higher half. Reload GDT with virtual address.
+    lgdt gdt64_ptr_virt
+
+
 
     # Load kernel data selector into all data segment registers
     mov $0x10, %ax
@@ -178,9 +170,13 @@ gdt64:
     .quad 0                                                                   # Entry 3: Placeholder  (padding)        → 0x18
     .quad (1 << 44) | (1 << 47) | (3 << 45)                                  # Entry 4: User data    (DPL=3)          → 0x23 (USER_SS)
     .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45)          # Entry 5: User code    (DPL=3, 64-bit)  → 0x2b (USER_CS)
-gdt64_ptr:
+gdt64_ptr_phys:
     .short . - gdt64 - 1
     .quad gdt64 - 0xffffffff80000000
+
+gdt64_ptr_virt:
+    .short . - gdt64 - 1
+    .quad gdt64
 
 .section .bss
 .align 4096

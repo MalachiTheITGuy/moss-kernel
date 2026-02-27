@@ -225,3 +225,17 @@ mod x86_64;
 
 #[cfg(target_arch = "x86_64")]
 pub use self::x86_64::X86_64 as ArchImpl;
+
+/// Write a byte to the debug serial port (COM1: 0x3F8) for early boot debugging.
+/// No-op on non-x86_64 architectures.
+#[inline(always)]
+pub fn debug_serial_putchar(c: u8) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        unsafe {
+            core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = c;
+}

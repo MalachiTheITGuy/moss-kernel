@@ -149,6 +149,7 @@ macro_rules! define_descriptor {
                 fn map_shift() -> usize { $tbl_shift }
 
                 fn could_map(region: PhysMemoryRegion, va: VA) -> bool {
+                    if $tbl_shift > 21 { return false; }
                     let is_aligned = |addr: usize| (addr & ((1 << $tbl_shift) - 1)) == 0;
                     is_aligned(region.start_address().value())
                         && is_aligned(va.value())

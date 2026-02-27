@@ -19,6 +19,20 @@ pub struct X86InterruptController {
 
 impl X86InterruptController {
     pub fn new() -> Self {
+        // Disable legacy PIC
+        unsafe {
+            core::arch::asm!(
+                "outb %al, %dx", 
+                in("dx") 0x21u16, in("al") 0xFFu8,
+                options(att_syntax, nomem, nostack)
+            );
+            core::arch::asm!(
+                "outb %al, %dx", 
+                in("dx") 0xA1u16, in("al") 0xFFu8,
+                options(att_syntax, nomem, nostack)
+            );
+        }
+
         let lapic = LocalApic::new(VirtAddr::new(0xFEE00000));
         lapic.init();
         Self { lapic }

@@ -18,9 +18,11 @@ SECTIONS
     {
         __rodata_start = .;
         *(.rodata*)
+        . = ALIGN(8);
         __driver_inits_start = .;
         *(.driver_inits*)
         __driver_inits_end = .;
+        . = ALIGN(8);
         __fixups_start = .;
         *(.exception_fixups*)
         __fixups_end = .;

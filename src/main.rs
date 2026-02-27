@@ -16,6 +16,7 @@ use alloc::{
     vec::Vec,
 };
 use arch::{Arch, ArchImpl};
+use arch::debug_serial_putchar;
 use core::panic::PanicInfo;
 use drivers::fs::register_fs_drivers;
 use fs::VFS;
@@ -233,12 +234,16 @@ fn parse_args(args: &str) -> KOptions {
 
 pub fn kmain(args: String, ctx_frame: *mut UserCtx) {
     sched_init();
+    debug_serial_putchar(b'M');
 
     register_fs_drivers();
+    debug_serial_putchar(b'N');
 
     let kopts = parse_args(&args);
+    debug_serial_putchar(b'O');
 
     spawn_kernel_work(launch_init(kopts));
+    debug_serial_putchar(b'P');
 
     dispatch_userspace_task(ctx_frame);
 }
