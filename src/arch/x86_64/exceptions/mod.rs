@@ -158,6 +158,21 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
             state_ref,
             cr2.as_u64()
         );
+
+        // Try to dump a few words from the faulting stack pointer.  In the
+        // memcpy crash we're debugging the destination pointer ended up null,
+        // so the return address stored at `rsp` should point at the caller of
+        // memcpy.  Print several entries in case the frame pointer or call
+        // thunk pushed additional data.
+        let rsp_val = state_ref.rsp as *const usize;
+        unsafe {
+            log::error!("stack trace words from faulting rsp = {:#x}", rsp_val as usize);
+            for i in 0..6 {
+                let w = rsp_val.add(i).read();
+                log::error!("  [rsp + {}] = {:#018x}", i * 8, w);
+            }
+        }
+
         if state_ref.cs & 0x3 == 0 {
             panic!("Kernel exception");
         }

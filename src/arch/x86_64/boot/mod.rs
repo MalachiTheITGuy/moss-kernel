@@ -540,7 +540,13 @@ pub fn arch_init_stage2() {
     // Build cmdline string now that the heap is initialized.
     let cmdline_str = load_cmdline_string();
 
-    crate::kmain(cmdline_str, core::ptr::null_mut());
+    // The early boot path has no saved userspace context, but
+    // `kmain`/`dispatch_userspace_task` expect a valid pointer.  Allocate a
+    // temporary `UserCtx` on the stack and pass its address so that the
+    // scheduler can write a context into it if necessary.  The value is not
+    // otherwise used by any code on the boot path.
+    let mut initial_ctx: crate::process::ctx::UserCtx = unsafe { core::mem::zeroed() };
+    crate::kmain(cmdline_str, &mut initial_ctx as *mut _);
 
     #[allow(clippy::never_loop)]
     loop {

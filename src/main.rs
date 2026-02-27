@@ -51,6 +51,41 @@ mod sync;
 #[cfg(test)]
 pub mod testing;
 
+// Override the C `memcpy` symbol so we can catch bad copies during early
+// userspace setup.  The compiler inserts calls to `memcpy` for things like
+// `copy_from_slice` and other bulk memory moves, and a null destination is a
+// common source of kernel page faults.  By providing our own implementation we
+// log each invocation and, when the destination is null, panic with the
+// caller's return address so we can track down the origin.
+
+pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    // Grab the return address from the stack directly.  When the
+    // function is entered the return pointer is stored at *rsp* per the
+    // SysV AMD64 ABI.
+    let caller: usize;
+    unsafe {
+        core::arch::asm!(
+            "mov {ret}, [rsp]",
+            ret = out(reg) caller,
+        );
+    }
+    log::error!(
+        "memcpy called from {:#x}, dest={:?}, src={:?}, n={}",
+        caller,
+        dest,
+        src,
+        n
+    );
+    if dest.is_null() {
+        if n != 0 {
+            panic!("memcpy with null destination (called from {:#x})", caller);
+        }
+    } else if n != 0 {
+        unsafe { core::ptr::copy_nonoverlapping(src, dest, n) };
+    }
+    dest
+}
+
 #[panic_handler]
 fn on_panic(info: &PanicInfo) -> ! {
     ArchImpl::disable_interrupts();
