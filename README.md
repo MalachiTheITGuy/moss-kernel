@@ -118,24 +118,51 @@ nix shell nixpkgs#pkgsCross.aarch64-embedded.stdenv.cc nixpkgs#pkgsCross.aarch64
 
 ### Running via QEMU
 
-To build the kernel and launch it in QEMU:
+### Building and booting the kernel
 
-``` bash
-just run
+The process is identical for both supported architectures (x86_64 and
+aarch64).  `moss.img` is an ext4 filesystem containing a minimal Alpine
+minirootfs plus a custom `/bin/usertest` binary; the kernel mounts this image
+as the root filesystem and executes the specified init program.
+
+You can use `just` to handle all of the steps for you:
+
+```bash
+# create a new Alpine image for the default arch (x86_64) or pass `aarch64`
+just create-image          # creates x86_64 image
+just create-image aarch64  # builds the arm64 image
+
+# build the kernel and launch it in QEMU
+just run          # runs x86_64 kernel
+just run aarch64  # runs the arm64 kernel
 ```
 
-If you don't have `just` installed, you can run the underlying commands directly:
+Both `qemu-runner` scripts accept additional command-line options that are
+appended directly to the kernel command line.  This makes it easy to run a
+one-shot command in the init shell without having to interact manually:
 
-``` bash
-# First time only (to create the image)
-./scripts/create-image.sh
-# Then, to run the kernel in QEMU
-# By default it will launch into bash, which alpine doesn't have, however `ash` and `sh` are both available.
-cargo run --release -- /bin/ash
+```bash
+# start the x86_64 kernel, ask ash to print a message then sleep
+./scripts/qemu-runner-x86_64.sh \
+    target/x86_64-unknown-none/release/moss-kernel \
+    --init=/bin/ash --init-arg=-c --init-arg='echo hello; sleep 5'
+``` 
+
+The same invocation works on `qemu-runner.sh` for aarch64.
+
+If you don’t have `just` installed, the same thing can be performed manually:
+
+```bash
+# create the image (x86_64 by default, use ARCH or first argument to override)
+./scripts/create-image.sh x86_64
+# then run the kernel; an Alpine shell (`ash`/`sh`) is used by default
+cargo run --release --target x86_64-unknown-none -- /bin/ash
 ```
 
-The kernel runs off of `moss.img`.
-This image is a minimal alpine rootfs with the addition of a custom `usertest` binary in `/bin/usertest`.
+The kernel will boot with `moss.img` as its initrd and will automatically
+mount it using the `--rootfs=ext4fs` option.  The only difference between
+architectures is the QEMU command line; the behaviour once the kernel has
+started is the same.
 
 ### Running the Test Suite
 Because `libkernel` is architecturally decoupled, you can run the logic tests on
