@@ -348,8 +348,8 @@ fn setup_user_stack(
     // The top of the info block must be 16-byte aligned. The stack pointer on
     // entry to the new process must also be 16-byte aligned.
     let strings_base_va = STACK_END - total_string_size;
-    let final_sp_unaligned = strings_base_va - info_block_size;
-    let final_sp_val = final_sp_unaligned & !0xF; // Align down to 16 bytes
+    let final_sp_unaligned = (strings_base_va - info_block_size) & !0x7;
+    let final_sp_val = final_sp_unaligned & !0xF; // 16-byte align
 
     let total_stack_size = STACK_END - final_sp_val;
     if total_stack_size > STACK_SZ {
@@ -433,7 +433,9 @@ async fn process_interp(interp_path: String, vmas: &mut Vec<VMArea>) -> Result<V
         iendian,
     );
 
-    let interp_entry = VA::from_value(LINKER_BIAS + interp_elf.e_entry(iendian) as usize);
+    let raw_entry = interp_elf.e_entry(iendian) as usize;
+    let interp_entry = VA::from_value(LINKER_BIAS + raw_entry);
+    log::debug!("process_interp: e_entry=0x{:x} biased_entry=0x{:x}", raw_entry, interp_entry.value());
 
     Ok(interp_entry)
 }

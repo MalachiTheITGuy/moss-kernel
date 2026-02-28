@@ -34,6 +34,8 @@ use libkernel::arch::x86_64::memory::pg_tables::{PML4Table, PgTableArray};
 
 pub struct X86_64 {}
 
+/// Kernel code segment selector: GDT entry 1, RPL=0 (0x08)
+pub(super) const KERNEL_CS: u64 = (1 << 3) | 0;
 /// User code segment selector: GDT entry 5, RPL=3 (0x2b)
 pub(super) const USER_CS: u64 = (5 << 3) | 3;
 /// User data/stack segment selector: GDT entry 4, RPL=3 (0x23)
@@ -60,7 +62,7 @@ impl crate::arch::Arch for X86_64 {
             error_code: 0,
             rip: entry_point.value() as _,
             cs: USER_CS,
-            rflags: 0x202, // IF
+            rflags: 0x202, // IF | bit 1 (reserved, always 1)
             rsp: stack_top.value() as _,
             ss: USER_SS,
         }

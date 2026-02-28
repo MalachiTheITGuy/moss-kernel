@@ -93,8 +93,63 @@ impl UserAddressSpace for X86_64ProcessAddressSpace {
         unimplemented!()
     }
 
-    fn protect_range(&mut self, _va_range: VirtMemoryRegion, _perms: PtePermissions) -> Result<()> {
-        unimplemented!()
+    fn protect_range(&mut self, va_range: VirtMemoryRegion, perms: PtePermissions) -> Result<()> {
+        use libkernel::arch::x86_64::memory::pg_tables::{PgTable, PDPTTable, PDTable, PTTable};
+        use libkernel::arch::x86_64::memory::pg_descriptors::{TableMapper, PaMapper, PTDescriptor, PageTableEntry};
+        use libkernel::memory::PAGE_SIZE;
+        use crate::memory::PageOffsetTranslator;
+        use libkernel::memory::address::{TPA, TVA};
+        use libkernel::arch::x86_64::memory::pg_tables::PgTableArray;
+
+        let mut va = va_range.start_address();
+        let end = va_range.end_address();
+
+        while va < end {
+            // Walk PML4 → PDPT
+            let pdpt_pa: TPA<PgTableArray<PDPTTable>> = unsafe {
+                let pml4 = PML4Table::from_ptr(self.pml4_table.to_va::<PageOffsetTranslator>());
+                let desc = pml4.get_desc(va);
+                match desc.next_table_address() {
+                    Some(pa) => TPA::from_value(pa.value()),
+                    None => { va = va.add_bytes(PAGE_SIZE); continue; }
+                }
+            };
+            // Walk PDPT → PD
+            let pd_pa: TPA<PgTableArray<PDTable>> = unsafe {
+                let pdpt = PDPTTable::from_ptr(pdpt_pa.to_va::<PageOffsetTranslator>());
+                let desc = pdpt.get_desc(va);
+                match desc.next_table_address() {
+                    Some(pa) => TPA::from_value(pa.value()),
+                    None => { va = va.add_bytes(PAGE_SIZE); continue; }
+                }
+            };
+            // Walk PD → PT
+            let pt_pa: TPA<PgTableArray<PTTable>> = unsafe {
+                let pd = PDTable::from_ptr(pd_pa.to_va::<PageOffsetTranslator>());
+                let desc = pd.get_desc(va);
+                match desc.next_table_address() {
+                    Some(pa) => TPA::from_value(pa.value()),
+                    None => { va = va.add_bytes(PAGE_SIZE); continue; }
+                }
+            };
+            // Update the leaf PTE
+            unsafe {
+                let pt = PTTable::from_ptr(pt_pa.to_va::<PageOffsetTranslator>());
+                let old = pt.get_desc(va);
+                if old.is_valid() {
+                    pt.set_desc(va, old.set_permissions(perms));
+                }
+            }
+
+            va = va.add_bytes(PAGE_SIZE);
+        }
+
+        // Flush the TLB for this address space (full flush for simplicity).
+        unsafe {
+            core::arch::asm!("mov %cr3, %rax; mov %rax, %cr3", options(att_syntax, nostack));
+        }
+
+        Ok(())
     }
 
     fn unmap_range(&mut self, _va_range: VirtMemoryRegion) -> Result<Vec<PageFrame>> {

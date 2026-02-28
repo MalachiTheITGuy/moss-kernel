@@ -50,14 +50,17 @@ impl<AS: UserAddressSpace> ProcessVM<AS> {
     }
 
     pub fn from_map(map: MemoryMap<AS>) -> Self {
-        // Last entry will be the VMA with the highest address.
+        // Find the highest-addressed VMA that is not the user stack.
+        // The stack VMA (named "[stack]") is intentionally excluded because
+        // the program break should be placed just after the last load segment,
+        // not after the stack.
         let brk = map
             .vmas
-            .last_key_value()
-            .expect("No VMAs in map")
-            .1
-            .region
-            .end_address()
+            .values()
+            .filter(|vma| vma.name() != "[stack]")
+            .map(|vma| vma.region.end_address())
+            .max()
+            .expect("No non-stack VMAs in map")
             // VMAs should already be page-aligned, but just in case.
             .align_up(PAGE_SIZE);
 

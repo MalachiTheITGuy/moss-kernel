@@ -204,8 +204,6 @@ async fn launch_init(mut opts: KOptions) {
     init_args.append(&mut opts.init_args);
     log::debug!("appended init_args, total len={}", init_args.len());
 
-    init_args.append(&mut opts.init_args);
-
     log::debug!("about to exec init: path={:?} args={:?}", init.as_path(), init_args);
     let exec_fut = process::exec::kernel_exec(init.as_path(), inode, init_args, vec![]);
     log::debug!("created exec future");

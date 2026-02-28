@@ -102,10 +102,16 @@ _start:
 
 
 
-    # Enable PAE
+    # Enable PAE + SSE/SSE2 (OSFXSR=bit9, OSXMMEXCPT=bit10)
     mov %cr4, %eax
-    or $(1 << 5), %eax
+    or $(1 << 5) | (1 << 9) | (1 << 10), %eax
     mov %eax, %cr4
+
+    # Clear CR0.EM (bit2) and set CR0.MP (bit1) so SSE instructions don't #UD/trap
+    mov %cr0, %eax
+    and $(~(1 << 2)), %eax  # clear EM
+    or $(1 << 1), %eax      # set MP
+    mov %eax, %cr0
 
     # 2. Enable Long Mode and NX in EFER
     mov $0xC0000080, %ecx
@@ -179,7 +185,7 @@ gdt64:
     .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)                      # Entry 1: Kernel code  (DPL=0, 64-bit) → 0x08
     .quad (3 << 40) | (1 << 44) | (1 << 47)                                               # Entry 2: Kernel data  (DPL=0)         → 0x10
     .quad 0                                                                   # Entry 3: Placeholder  (padding)        → 0x18
-    .quad (1 << 44) | (1 << 47) | (3 << 45)                                  # Entry 4: User data    (DPL=3)          → 0x23 (USER_SS)
+    .quad (3 << 40) | (1 << 44) | (1 << 47) | (3 << 45)                      # Entry 4: User data    (DPL=3, W=1)     → 0x23 (USER_SS)
     .quad (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45)          # Entry 5: User code    (DPL=3, 64-bit)  → 0x2b (USER_CS)
 gdt64_ptr_phys:
     .short . - gdt64 - 1

@@ -23,6 +23,8 @@ use multiboot::information::{
 };
 
 use crate::arch::x86_64::X86_64;
+
+pub mod tss;
 use crate::console::setup_console_logger;
 
 /// Write a nibble (4 bits) as a hex character to the debug serial port
@@ -537,6 +539,14 @@ pub fn arch_init_stage2() {
 
     log::info!("x86_64: boot stage 2 complete");
 
+    // Set up the TSS and reload the GDT so that ring-3 exceptions have a
+    // valid kernel stack (RSP0) to switch to.
+    unsafe { tss::tss_init() };
+
+    // Configure the SYSCALL instruction (STAR, LSTAR, SFMASK, EFER.SCE)
+    // so that musl's native syscall ABI works.
+    unsafe { tss::syscall_init() };
+
     // Build cmdline string now that the heap is initialized.
     let cmdline_str = load_cmdline_string();
 
@@ -548,10 +558,12 @@ pub fn arch_init_stage2() {
     let mut initial_ctx: crate::process::ctx::UserCtx = unsafe { core::mem::zeroed() };
     crate::kmain(cmdline_str, &mut initial_ctx as *mut _);
 
-    #[allow(clippy::never_loop)]
-    loop {
-        X86_64::halt();
-    }
+    // `dispatch_userspace_task` has written the init process's register state
+    // into `initial_ctx`.  Use the boot-time iretq trampoline to jump to
+    // userspace.  This never returns.
+    log::info!("boot: jumping to userspace RIP=0x{:x} RSP=0x{:x} CS=0x{:x} SS=0x{:x}",
+        initial_ctx.rip, initial_ctx.rsp, initial_ctx.cs, initial_ctx.ss);
+    crate::arch::x86_64::exceptions::boot_jump_to_userspace_wrapper(&initial_ctx);
 }
 
 pub fn get_cmdline() -> Option<String> {
