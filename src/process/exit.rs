@@ -4,7 +4,7 @@ use super::{
     thread_group::{ProcessState, Tgid, ThreadGroup, signal::SigId, wait::ChildState},
     threading::futex::{self, key::FutexKey},
 };
-use crate::sched::current::current_task;
+use crate::{ArchImpl, arch::Arch, sched::current::current_task};
 use crate::{memory::uaccess::copy_to_user, sched::current::current_task_shared};
 use alloc::vec::Vec;
 use libkernel::error::Result;
@@ -16,7 +16,8 @@ pub fn do_exit_group(exit_code: ChildState) {
     let process = Arc::clone(&task.process);
 
     if process.tgid.is_init() {
-        panic!("Attempted to kill init");
+        log::info!("Init process exited with {:?} — powering off", exit_code);
+        ArchImpl::power_off();
     }
 
     let parent = process
