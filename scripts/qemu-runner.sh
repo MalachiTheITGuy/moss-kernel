@@ -14,10 +14,11 @@ elf="$1"
 shift
 
 # Same convenience as the x86_64 runner.
+# A bare path implies interactive mode, so --init-arg=-i is added automatically.
 append_args=""
 if [ $# -gt 0 ]; then
     if [[ "$1" != --* ]]; then
-        append_args="--init=$1"
+        append_args="--init=$1 --init-arg=-i"
         shift
     fi
     if [ $# -gt 0 ]; then

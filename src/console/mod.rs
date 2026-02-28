@@ -105,5 +105,5 @@ impl Log for ConsoleLogger {
 
 pub fn setup_console_logger() {
     let _ = log::set_logger(&CONSOLE_LOGGER);
-    log::set_max_level(LevelFilter::Trace);
+    log::set_max_level(LevelFilter::Info);
 }

@@ -249,7 +249,6 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         // Log extra registers to help diagnose memcpy faults.
         let rsi = state_ref.rsi;
         let rdi = state_ref.rdi;
-        log::error!("regs: RSI=0x{:016x} RDI=0x{:016x}", rsi, rdi);
 
         // ── Kernel upper-half PML4 propagation ──────────────────────────────
         // When a new kernel virtual mapping is installed (e.g. for a ramdisk)
@@ -303,6 +302,7 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
             }
         }
 
+        log::error!("regs: RSI=0x{:016x} RDI=0x{:016x}", rsi, rdi);
         log::error!(
             "x86_64 exception occurred:\n{}CR2: 0x{:016x}\n",
             state_ref,

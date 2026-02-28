@@ -22,11 +22,12 @@ shift
 
 # Convenience: if the first remaining argument does *not* look like a
 # long option, treat it as the init program path (the old behaviour).
+# A bare path implies interactive mode, so --init-arg=-i is added automatically.
 append_args=""
 if [ $# -gt 0 ]; then
     if [[ "$1" != --* ]]; then
-        # convert bare path into --init=...
-        append_args="--init=$1"
+        # convert bare path into --init=... and force interactive mode
+        append_args="--init=$1 --init-arg=-i"
         shift
     fi
     # append anything else verbatim
@@ -64,9 +65,7 @@ qemu-system-x86_64 \
     ${CPU_OPTS} \
     -m 2G \
     -smp 4 \
-    -display none \
-    -monitor none \
-    -serial stdio \
+    -nographic \
     -s \
     -kernel "$elf" \
     -initrd moss.img \

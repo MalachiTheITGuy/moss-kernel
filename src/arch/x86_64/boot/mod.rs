@@ -561,8 +561,8 @@ pub fn arch_init_stage2() {
     // `dispatch_userspace_task` has written the init process's register state
     // into `initial_ctx`.  Use the boot-time iretq trampoline to jump to
     // userspace.  This never returns.
-    log::info!("boot: jumping to userspace RIP=0x{:x} RSP=0x{:x} CS=0x{:x} SS=0x{:x}",
-        initial_ctx.rip, initial_ctx.rsp, initial_ctx.cs, initial_ctx.ss);
+    log::info!("boot: jumping to userspace RIP=0x{:x} RSP=0x{:x}",
+        initial_ctx.rip, initial_ctx.rsp);
     crate::arch::x86_64::exceptions::boot_jump_to_userspace_wrapper(&initial_ctx);
 }
 

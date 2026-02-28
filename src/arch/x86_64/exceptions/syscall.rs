@@ -121,8 +121,6 @@ pub async fn handle_syscall() {
         )
     };
 
-    log::debug!("syscall nr={} arg1=0x{:x} arg2=0x{:x} arg3=0x{:x}", nr, arg1, arg2, arg3);
-
     let res = match nr {
         0 => sys_read(arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
         1 => sys_write(arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
@@ -182,6 +180,7 @@ pub async fn handle_syscall() {
 
         107 => sys_geteuid().map_err(|e| match e {}),
         108 => sys_getgid().map_err(|e| match e {}),
+        109 => sys_setpgid(arg1 as _, Pgid(arg2 as u32)),
         110 => sys_getegid().map_err(|e| match e {}),
         111 => sys_setpgid(arg1 as _, Pgid(arg2 as u32)),
         112 => sys_getppid().map_err(|e| match e {}),

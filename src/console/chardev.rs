@@ -47,12 +47,6 @@ impl OpenableDevice for ConsoleDev {
                 super::ConsoleState::Device(_, char_dev_descriptor) => char_dev_descriptor,
             }
         };
-        log::debug!(
-            "ConsoleDev::open called (flags={:?}) using descriptor {:?}",
-            flags,
-            char_dev_desc
-        );
-
         // Lookup the underlying char driver while holding DM lock, but drop it
         // before performing the actual open call so we don't hold the lock during
         // potentially complex device initialization (which may itself acquire
@@ -64,10 +58,7 @@ impl OpenableDevice for ConsoleDev {
         };
 
         let char_driver = match char_driver {
-            Some(d) => {
-                log::debug!("found char driver for major {}", char_dev_desc.major);
-                d
-            }
+            Some(d) => d,
             None => {
                 log::warn!("no char driver for major {}", char_dev_desc.major);
                 return Err(FsError::NoDevice.into());
@@ -75,7 +66,6 @@ impl OpenableDevice for ConsoleDev {
         };
 
         if let Some(dev) = char_driver.get_device(char_dev_desc.minor) {
-            log::debug!("found device for minor {}", char_dev_desc.minor);
             dev.open(flags)
         } else {
             log::warn!("no device present for minor {}", char_dev_desc.minor);

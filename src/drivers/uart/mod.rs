@@ -175,12 +175,9 @@ struct UartInstance {
 
 impl OpenableDevice for UartInstance {
     fn open(&self, flags: OpenFlags) -> Result<Arc<OpenFile>> {
-        log::debug!("UartInstance::open flags={:?}", flags);
         let tty = Tty::new(self.driver.clone())?;
-        log::debug!("UartInstance::open created Tty");
 
         let of = Arc::new(OpenFile::new(Box::new(tty), flags));
-        log::debug!("UartInstance::open returning OpenFile");
         Ok(of)
     }
 }

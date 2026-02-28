@@ -89,25 +89,21 @@ async fn exec_elf(
     argv: Vec<String>,
     envp: Vec<String>,
 ) -> Result<()> {
-    log::debug!("exec_elf: starting for {:?}", path);
+    log::info!("exec: {:?} argv={:?}", path, argv);
     // Read ELF header
     let mut buf = [0u8; core::mem::size_of::<elf::FileHeader64<LittleEndian>>()];
-    log::debug!("exec_elf: reading ELF header");
     inode.read_at(0, &mut buf).await?;
 
     let elf = elf::FileHeader64::<LittleEndian>::parse(buf.as_slice())
         .map_err(|_| ExecError::InvalidElfFormat)?;
     let endian = elf.endian().unwrap();
-    log::debug!("exec_elf: parsed ELF header, entry=0x{:x}", elf.e_entry.get(endian));
 
     // Read full program header table
     let ph_table_size = elf.e_phnum.get(endian) as usize * elf.e_phentsize.get(endian) as usize
         + elf.e_phoff.get(endian) as usize;
-    log::debug!("exec_elf: reading program headers ({} bytes)", ph_table_size);
     let mut ph_buf = vec![0u8; ph_table_size];
 
     inode.read_at(0, &mut ph_buf).await?;
-    log::debug!("exec_elf: read program headers");
 
     let hdrs = elf
         .program_headers(endian, ph_buf.as_slice())
@@ -115,10 +111,8 @@ async fn exec_elf(
 
     // Detect PT_INTERP (dynamic linker) if present
     let mut interp_path: Option<String> = None;
-    log::debug!("exec_elf: scanning {} program headers", hdrs.len());
     for hdr in hdrs.iter() {
         if hdr.p_type(endian) == elf::PT_INTERP {
-            log::debug!("exec_elf: found PT_INTERP header");
             let off = hdr.p_offset(endian) as usize;
             let filesz = hdr.p_filesz(endian) as usize;
             if filesz == 0 {
@@ -131,7 +125,6 @@ async fn exec_elf(
             let len = ibuf.iter().position(|&b| b == 0).unwrap_or(filesz);
             let s = core::str::from_utf8(&ibuf[..len]).map_err(|_| ExecError::InvalidElfFormat)?;
             interp_path = Some(s.to_string());
-            log::debug!("exec_elf: interpreter path {}", s);
             break;
         }
     }
@@ -153,11 +146,9 @@ async fn exec_elf(
     let mut vmas = Vec::new();
 
     // Process the binary program headers.
-    log::debug!("exec_elf: creating VMAs from program headers");
     if let Some(hdr_addr) =
         process_prog_headers(hdrs, &mut vmas, main_bias, inode.clone(), path, endian)
     {
-        log::debug!("exec_elf: found PHDR VMA at {:?}", hdr_addr);
         auxv.push(AT_PHDR);
         auxv.push(hdr_addr.add_bytes(elf.e_phoff(endian) as _).value() as _);
     }
@@ -179,7 +170,6 @@ async fn exec_elf(
         main_entry
     };
 
-    log::debug!("exec_elf: setting up user stack");
     let mut stack_vma = VMArea::new(
         VirtMemoryRegion::new(VA::from_value(STACK_START), STACK_SZ),
         VMAreaKind::Anon,
@@ -192,7 +182,6 @@ async fn exec_elf(
 
     let mut mem_map = MemoryMap::from_vmas(vmas)?;
     let stack_ptr = setup_user_stack(&mut mem_map, &argv, &envp, auxv)?;
-    log::debug!("exec_elf: user stack configured at {:?}", stack_ptr);
 
     // We are now committed to the exec.  Inform ptrace.
     ptrace_stop(TracePoint::Exec).await;
@@ -225,7 +214,6 @@ async fn exec_elf(
     fd_table.close_cloexec_entries().await;
     *current_task().fd_table.lock_save_irq() = fd_table;
 
-    log::debug!("exec_elf: finished loading executable");
     Ok(())
 }
 
@@ -273,11 +261,8 @@ pub async fn kernel_exec(
     argv: Vec<String>,
     envp: Vec<String>,
 ) -> Result<()> {
-    log::debug!("kernel_exec: starting path={:?} argv={:?}", path, argv);
     let mut buf = [0u8; 4];
-    log::debug!("kernel_exec: about to read magic header");
     inode.read_at(0, &mut buf).await?;
-    log::debug!("kernel_exec: header bytes={:x?}", buf);
     if buf == [0x7F, b'E', b'L', b'F'] {
         exec_elf(inode, path, argv, envp).await
     } else if buf.starts_with(b"#!") {
@@ -435,7 +420,6 @@ async fn process_interp(interp_path: String, vmas: &mut Vec<VMArea>) -> Result<V
 
     let raw_entry = interp_elf.e_entry(iendian) as usize;
     let interp_entry = VA::from_value(LINKER_BIAS + raw_entry);
-    log::debug!("process_interp: e_entry=0x{:x} biased_entry=0x{:x}", raw_entry, interp_entry.value());
 
     Ok(interp_entry)
 }

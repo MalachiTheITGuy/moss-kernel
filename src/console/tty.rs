@@ -47,7 +47,6 @@ pub struct Tty {
 
 impl Tty {
     pub fn new(console: Arc<dyn Console>) -> Result<Self> {
-        log::debug!("Tty::new start");
         let meta = Arc::new(SpinLock::new(TtyMetadata::default()));
 
         let this = Self {
@@ -59,7 +58,6 @@ impl Tty {
         let tty_as_handler: Arc<dyn TtyInputHandler> = this.input_cooker.clone();
 
         console.register_input_handler(Arc::downgrade(&tty_as_handler));
-        log::debug!("Tty::new done");
         Ok(this)
     }
 
