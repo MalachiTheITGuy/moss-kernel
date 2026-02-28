@@ -136,13 +136,28 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
     let vector = state_ref.vector;
     
     if vector >= 32 && vector <= 255 {
+        // Save user context before handling the interrupt so the scheduler
+        // can switch to a different task if one becomes runnable (mirrors
+        // ARM64's el0_irq pattern).
+        if from_user {
+            use crate::sched::current::current_task;
+            current_task().ctx.save_user_ctx(state);
+        }
+
         if let Some(root) = crate::interrupts::get_interrupt_root() {
             crate::arch::x86_64::interrupts::set_pending_vector(vector as u8);
             root.handle_interrupt();
         }
-        
-        // Signal EOI if it's an APIC interrupt
-        // For now, we'll just assume it's handled.
+
+        // After handling the IRQ, run the scheduler so that any task woken
+        // by this interrupt (e.g. ash woken by a UART RX byte) gets to run.
+        // This is equivalent to ARM64's el0_irq calling dispatch_userspace_task.
+        if from_user {
+            use crate::sched::uspc_ret::dispatch_userspace_task;
+            dispatch_userspace_task(state);
+            write_fs_base(unsafe { (*state).fs_base });
+            return state;
+        }
     } else {
         // ── User-space demand paging ────────────────────────────────────────
         // For page faults that originate from user mode, attempt to resolve
