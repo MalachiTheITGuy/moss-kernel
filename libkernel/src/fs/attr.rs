@@ -111,19 +111,9 @@ impl FileAttr {
             return Ok(());
         }
 
-        // root (UID 0) bypasses most permission checks. For execute, at
-        // least one execute bit must be set.
+        // root (UID 0) bypasses all permission checks.
         if uid.is_root() {
-            if requested_mode.contains(AccessMode::X_OK) {
-                // Root still needs at least one execute bit to be set for X_OK
-                if self.mode.intersects(
-                    FilePermissions::S_IXUSR | FilePermissions::S_IXGRP | FilePermissions::S_IXOTH,
-                ) {
-                    return Ok(());
-                }
-            } else {
-                return Ok(());
-            }
+            return Ok(());
         }
 
         // Determine which set of permission bits to use (owner, group, or other)

@@ -15,9 +15,14 @@ pub fn do_exit_group(exit_code: ChildState) {
     let task = current_task();
     let process = Arc::clone(&task.process);
 
+    // Init process exited - mark task as finished so scheduler doesn't reschedule it
     if process.tgid.is_init() {
-        log::info!("Init process exited with {:?} — powering off", exit_code);
-        ArchImpl::power_off();
+        log::info!("Init process exited with {:?}", exit_code);
+        // Mark as finished to prevent rescheduling
+        *task.state.lock_save_irq() = TaskState::Finished;
+        // Remove from task list so it won't be scheduled again
+        super::TASK_LIST.lock_save_irq().remove(&task.descriptor());
+        return;
     }
 
     let parent = process

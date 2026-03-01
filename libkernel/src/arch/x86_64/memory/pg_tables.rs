@@ -2,33 +2,20 @@ use core::marker::PhantomData;
 
 /// Write a nibble (4 bits) as a hex character to the debug serial port
 #[inline(always)]
-fn debug_puthex_nibble(nibble: u8) {
-    let c = if nibble < 10 {
-        b'0' + nibble
-    } else {
-        b'A' + nibble - 10
-    };
-    unsafe {
-        core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
-    }
+fn debug_puthex_nibble(_nibble: u8) {
+    // Debug output disabled - inline asm not configurable in current setup
 }
 
 /// Write a full address (usize) as hex to the debug serial port
 #[inline(always)]
-fn debug_puthex_addr(addr: usize) {
-    let bytes = addr.to_ne_bytes();
-    for byte in bytes.iter().rev() {
-        debug_puthex_nibble((byte >> 4) & 0xF);
-        debug_puthex_nibble(byte & 0xF);
-    }
+fn debug_puthex_addr(_addr: usize) {
+    // Debug output disabled - inline asm not configurable in current setup
 }
 
 /// Write a byte to the debug serial port
 #[inline(always)]
-fn debug_putchar(c: u8) {
-    unsafe {
-        core::arch::asm!("outb %al, %dx", in("al") c, in("dx") 0x3F8u16, options(att_syntax));
-    }
+fn debug_putchar(_c: u8) {
+    // Debug output disabled - inline asm not configurable in current setup
 }
 
 use super::pg_descriptors::{

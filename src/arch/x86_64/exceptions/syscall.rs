@@ -89,6 +89,7 @@ use crate::{
             wait::{sys_wait4, sys_waitid},
         },
         threading::{futex::sys_futex, sys_set_robust_list, sys_set_tid_address},
+        creds::sys_unshare,
     },
     sched::{current::current_task, sys_sched_yield, uspc_ret::dispatch_userspace_task},
     spawn_kernel_work,
@@ -150,6 +151,7 @@ pub async fn handle_syscall() {
         35 => sys_nanosleep(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
         39 => sys_getpid().map_err(|e| match e {}),
         56 => sys_clone(arg1 as _, UA::from_value(arg2 as _), TUA::from_value(arg3 as _), TUA::from_value(arg5 as _), arg4 as _).await,
+        57 => sys_clone(17, UA::null(), TUA::null(), TUA::null(), 0).await, // fork = clone(SIGCHLD)
         59 => sys_execve(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _), TUA::from_value(arg3 as _)).await,
         60 => {
             let _ = sys_exit(arg1 as _).await;
@@ -181,12 +183,11 @@ pub async fn handle_syscall() {
         107 => sys_geteuid().map_err(|e| match e {}),
         108 => sys_getgid().map_err(|e| match e {}),
         109 => sys_setpgid(arg1 as _, Pgid(arg2 as u32)),
-        110 => sys_getegid().map_err(|e| match e {}),
-        111 => sys_setpgid(arg1 as _, Pgid(arg2 as u32)),
-        112 => sys_getppid().map_err(|e| match e {}),
-        113 => sys_getpgid(0),
-        114 => sys_setsid().await,
-        121 => sys_getpgid(arg1 as _),
+        110 => sys_getppid().map_err(|e| match e {}),
+        111 => sys_getsid(arg1 as _),
+        112 => sys_setpgid(arg1 as _, Pgid(arg2 as u32)),
+        113 => sys_getpgid(arg1 as _),
+        121 => sys_unshare(arg1 as _),
         131 => sys_sigaltstack(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
         132 => sys_utimensat(Fd(AT_FDCWD), TUA::from_value(arg1 as _), TUA::from_value(arg2 as _), 0).await, // utime -> utimensat
         157 => sys_prctl(arg1 as _, arg2 as _, arg3 as _).await,
@@ -197,6 +198,7 @@ pub async fn handle_syscall() {
         168 => sys_getresgid(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _), TUA::from_value(arg3 as _)).await,
         186 => sys_gettid().map_err(|e| match e {}),
         197 => sys_fstat(arg1.into(), TUA::from_value(arg2 as _)).await,
+        200 => Err(libkernel::error::KernelError::NotSupported), // sys_setns - namespaces not implemented
         202 => sys_futex(TUA::from_value(arg1 as _), arg2 as _, arg3 as _, TUA::from_value(arg4 as _), TUA::from_value(arg5 as _), arg6 as _).await,
 
         217 => sys_getdents64(arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,

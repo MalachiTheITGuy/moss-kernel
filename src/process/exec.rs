@@ -45,7 +45,9 @@ mod auxv;
 const LINKER_BIAS: usize = 0x0000_7000_0000_0000;
 const PROG_BIAS: usize = 0x0000_5000_0000_0000;
 
-const STACK_END: usize = 0x0000_8000_0000_0000;
+// User stack - placed in upper half of 57-bit address space (0x8000_0000_0000_0000+)
+// Must be page-aligned and leave room for guard page at the top
+const STACK_END: usize = 0xffff_ffff_ffff_f000;
 const STACK_SZ: usize = 0x2000 * 0x400;
 const STACK_START: usize = STACK_END - STACK_SZ;
 

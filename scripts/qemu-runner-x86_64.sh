@@ -60,13 +60,14 @@ if [ -n "${KVM_OPTS}" ]; then
     CPU_OPTS="-cpu host"
 fi
 
+# Use nographic for better interactive serial handling
 qemu-system-x86_64 \
     -M q35 \
     ${CPU_OPTS} \
     -m 2G \
     -smp 4 \
     -nographic \
-    -s \
+    -serial mon:stdio \
     -kernel "$elf" \
     -initrd moss.img \
     -append "$append_args --rootfs=ext4fs --automount=/dev,devfs --automount=/tmp,tmpfs --automount=/proc,procfs --automount=/sys,sysfs" \

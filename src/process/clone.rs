@@ -57,7 +57,7 @@ pub async fn sys_clone(
     child_tidptr: TUA<u32>,
     tls: usize,
 ) -> Result<usize> {
-    let flags = CloneFlags::from_bits_truncate(flags);
+    let clone_flags = CloneFlags::from_bits_truncate(flags);
 
     // TODO: differentiate between `TracePoint::Fork`, `TracePoint::Clone` and
     // `TracePoint::VFork`.
@@ -71,12 +71,12 @@ pub async fn sys_clone(
         // The child returns '0' on clone.
         ArchImpl::set_user_return_value(&mut user_ctx, 0);
 
-        if flags.contains(CloneFlags::CLONE_SETTLS) {
+        if clone_flags.contains(CloneFlags::CLONE_SETTLS) {
             ArchImpl::set_user_thread_area(&mut user_ctx, VA::from_value(tls));
         }
 
-        let (tg, tid) = if flags.contains(CloneFlags::CLONE_THREAD) {
-            if !flags.contains(CloneFlags::CLONE_SIGHAND & CloneFlags::CLONE_VM) {
+        let (tg, tid) = if clone_flags.contains(CloneFlags::CLONE_THREAD) {
+            if !clone_flags.contains(CloneFlags::CLONE_SIGHAND & CloneFlags::CLONE_VM) {
                 // CLONE_THREAD requires both CLONE_SIGHAND and CLONE_VM to be
                 // set.
                 return Err(KernelError::InvalidValue);
@@ -89,7 +89,7 @@ pub async fn sys_clone(
                 current_task.process.next_tid(),
             )
         } else {
-            let tgid_parent = if flags.contains(CloneFlags::CLONE_PARENT) {
+            let tgid_parent = if clone_flags.contains(CloneFlags::CLONE_PARENT) {
                 // Use the parent's parent as the new parent.
                 current_task
                     .process
@@ -104,10 +104,10 @@ pub async fn sys_clone(
                 current_task.process.clone()
             };
 
-            tgid_parent.new_child(flags.contains(CloneFlags::CLONE_SIGHAND))
+            tgid_parent.new_child(clone_flags.contains(CloneFlags::CLONE_SIGHAND))
         };
 
-        let vm = if flags.contains(CloneFlags::CLONE_VM) {
+        let vm = if clone_flags.contains(CloneFlags::CLONE_VM) {
             current_task.vm.clone()
         } else {
             Arc::new(SpinLock::new(
@@ -115,25 +115,25 @@ pub async fn sys_clone(
             ))
         };
 
-        let files = if flags.contains(CloneFlags::CLONE_FILES) {
+        let files = if clone_flags.contains(CloneFlags::CLONE_FILES) {
             current_task.fd_table.clone()
         } else {
             Arc::new(SpinLock::new(current_task.fd_table.lock_save_irq().clone()))
         };
 
-        let cwd = if flags.contains(CloneFlags::CLONE_FS) {
+        let cwd = if clone_flags.contains(CloneFlags::CLONE_FS) {
             current_task.cwd.clone()
         } else {
             Arc::new(SpinLock::new(current_task.cwd.lock_save_irq().clone()))
         };
 
-        let root = if flags.contains(CloneFlags::CLONE_FS) {
+        let root = if clone_flags.contains(CloneFlags::CLONE_FS) {
             current_task.root.clone()
         } else {
             Arc::new(SpinLock::new(current_task.root.lock_save_irq().clone()))
         };
 
-        let ptrace = if flags.contains(CloneFlags::CLONE_PTRACE) || should_trace_new_tsk {
+        let ptrace = if clone_flags.contains(CloneFlags::CLONE_PTRACE) || should_trace_new_tsk {
             current_task.ptrace.lock_save_irq().clone()
         } else {
             PTrace::new()
@@ -197,10 +197,10 @@ pub async fn sys_clone(
     NUM_FORKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     // Honour CLONE_*SETTID semantics for the parent and (shared-VM) child.
-    if flags.contains(CloneFlags::CLONE_PARENT_SETTID) && !parent_tidptr.is_null() {
+    if clone_flags.contains(CloneFlags::CLONE_PARENT_SETTID) && !parent_tidptr.is_null() {
         copy_to_user(parent_tidptr, tid.value()).await?;
     }
-    if flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !child_tidptr.is_null() {
+    if clone_flags.contains(CloneFlags::CLONE_CHILD_SETTID) && !child_tidptr.is_null() {
         copy_to_user(child_tidptr, tid.value()).await?;
     }
 

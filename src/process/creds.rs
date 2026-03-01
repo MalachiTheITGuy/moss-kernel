@@ -6,7 +6,7 @@ use crate::{
     sched::current::current_task,
 };
 use libkernel::{
-    error::Result,
+    error::{KernelError, Result},
     memory::address::TUA,
     proc::{
         caps::Capabilities,
@@ -130,7 +130,9 @@ pub async fn sys_getresgid(rgid: TUA<Gid>, egid: TUA<Gid>, sgid: TUA<Gid>) -> Re
     Ok(0)
 }
 
-pub async fn sys_getsid() -> Result<usize> {
+pub fn sys_getsid(_pid: u32) -> Result<usize> {
+    // For now, return current process's sid regardless of pid argument
+    // TODO: Implement proper pid lookup
     let sid: u32 = current_task().process.sid.lock_save_irq().value();
 
     Ok(sid as _)
@@ -143,4 +145,9 @@ pub async fn sys_setsid() -> Result<usize> {
     *process.sid.lock_save_irq() = Sid(new_sid);
 
     Ok(new_sid as _)
+}
+
+pub fn sys_unshare(_flags: usize) -> Result<usize> {
+    // namespaces not implemented yet - return ENOSYS
+    Err(KernelError::NotSupported)
 }

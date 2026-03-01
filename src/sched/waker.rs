@@ -27,6 +27,7 @@ unsafe fn wake_waker(data: *const ()) {
         match *state {
             // If the task has been put to sleep, then wake it up.
             TaskState::Sleeping | TaskState::Stopped => {
+                log::info!("Waker: waking sleeping task from I/O completion");
                 if locus == CpuId::this() {
                     *state = TaskState::Runnable;
                     SCHED_STATE.borrow_mut().wakeup(desc);
@@ -40,9 +41,12 @@ unsafe fn wake_waker(data: *const ()) {
             // between a future returning `Poll::Pending` and the sched setting
             // the state to sleeping.
             TaskState::Running => {
+                log::info!("Waker: task already running, marking as Woken");
                 *state = TaskState::Woken;
             }
-            _ => {}
+            _ => {
+                log::info!("Waker: task in state {:?}, not waking (already ready or finished)", *state);
+            }
         }
     }
 }

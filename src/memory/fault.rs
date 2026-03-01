@@ -61,7 +61,14 @@ pub fn handle_demand_fault(
             let pg_buf = &mut new_page.as_slice_mut()
                 [vma_read.page_offset..vma_read.page_offset + vma_read.read_len];
 
-            vma_read.inode.read_at(vma_read.file_offset, pg_buf).await?;
+            match vma_read.inode.read_at(vma_read.file_offset, pg_buf).await {
+                Ok(_) => {
+                }
+                Err(e) => {
+                    log::error!("Deferred page fault: inode read failed: {:?}", e);
+                    return Err(e);
+                }
+            }
 
             // Since the above may have put the task to sleep, revalidate the
             // VMA access.
@@ -152,10 +159,12 @@ pub fn handle_protection_fault(
             .unwrap()
             .is_allocated_exclusive(pg_info.pfn)
         {
-            // Take ownership of the page.
+            // Page is exclusively allocated. Just need to update permissions.
+            // Use remap to atomically replace the mapping with new permissions,
+            // ensuring the TLB is properly flushed for just this page.
             vm.mm_mut()
                 .address_space_mut()
-                .protect_range(faulting_addr.page_region(), new_pte_perms)?;
+                .remap(faulting_addr, pg_info.pfn, new_pte_perms)?;
 
             Ok(FaultResolution::Resolved)
         } else {

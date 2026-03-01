@@ -4,6 +4,8 @@ use core::fmt::Display;
 use core::arch::global_asm;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::{PrivilegeLevel, VirtAddr};
+use crate::debug_serial_putchar;
+use libkernel::error::Result;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -185,10 +187,11 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
                 AccessKind::Read
             };
 
-            // Only attempt demand-paging for not-present faults (bit 0 == 0).
-            // Protection violations (bit 0 == 1) are not yet handled and fall
+            // Attempt demand-paging for not-present faults (bit 0 == 0) or
+            // present write faults (bit 0 == 1 and bit 1 == 1).
+            // Protection violations for read or execute are not handled and fall
             // through to SIGSEGV below.
-            if state_ref.error_code & 0x1 == 0 {
+            if state_ref.error_code & 0x1 == 0 || (state_ref.error_code & 0x1 == 1 && state_ref.error_code & 0x2 != 0) {
                 let proc_vm = current_task().vm.clone();
                 match handle_demand_fault(proc_vm, faulting_va, access_kind) {
                     Ok(FaultResolution::Resolved) => {
@@ -196,28 +199,38 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
                         write_fs_base(state_ref.fs_base);
                         return state;
                     }
-                    Ok(FaultResolution::Deferred(mut io_fut)) => {
-                        // Needs I/O; schedule as kernel work and switch tasks.
-                        {
-                            let mut task = current_task();
-                            task.ctx.save_user_ctx(state);
-                            task.ctx.put_kernel_work(Box::pin(async move {
-                                // FaultResolution::Deferred wraps Box<dyn Future>; pin it to await.
-                                if let Err(e) = unsafe { core::pin::Pin::new_unchecked(&mut *io_fut) }.await {
-                                    log::error!(
-                                        "page fault deferred resolution failed: {:?}", e
-                                    );
-                                }
-                            }));
-                        }
-                        dispatch_userspace_task(state);
-                        // dispatch_userspace_task restored the context of the
-                        // task to run; update FS_BASE and return.
-                        write_fs_base(unsafe { (*state).fs_base });
-                        return state;
+                        Ok(FaultResolution::Deferred(io_fut)) => {
+                            // Needs I/O; schedule as kernel work and switch tasks.
+                            {
+                                let mut task = current_task();
+                                task.ctx.save_user_ctx(state);
+                                // The io_fut is Box<dyn Future<Output=Result<()>>>
+                                // We already have it as a Box. Just cast it to Pin<Box<_>> and await
+                                let pinned_fut: core::pin::Pin<Box<dyn core::future::Future<Output=libkernel::error::Result<()>> + Send + 'static>>
+                                    = core::pin::Pin::from(io_fut);
+                                task.ctx.put_kernel_work(Box::pin(async move {
+                                    // Kernel work started
+                                    match pinned_fut.await {
+                                        Ok(()) => {
+                                            // Kernel work completed
+                                        }
+                                        Err(e) => {
+                                            log::error!("page fault deferred resolution failed: {:?}", e);
+                                        }
+                                    }
+                                }));
+                                // Kernel work queued, about to call dispatch
+                            }
+                            dispatch_userspace_task(state);
+                            // Dispatch returned
+                            // dispatch_userspace_task restored the context of the
+                            // task to run; update FS_BASE and return.
+                            write_fs_base(unsafe { (*state).fs_base });
+                            return state;
                     }
                     Ok(FaultResolution::Denied) | Err(_) => {
-                        // Out-of-bounds or permission denied → SIGSEGV.
+                        // Out-of-bounds or permission denied → kill process then
+                        // pick a new task; don't return to the dead process.
                         log::warn!(
                             "SIGSEGV: user fault at {:?} (RIP={:#x}, err={:#x})",
                             faulting_va,
@@ -225,17 +238,15 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
                             state_ref.error_code,
                         );
                         use crate::process::thread_group::signal::SigId;
-                        let mut task = current_task();
-                        task.ctx.save_user_ctx(state);
-                        task.process.deliver_signal(SigId::SIGSEGV);
-                        drop(task);
+                        crate::process::exit::kernel_exit_with_signal(SigId::SIGSEGV, false);
                         dispatch_userspace_task(state);
                         write_fs_base(unsafe { (*state).fs_base });
                         return state;
                     }
                 }
             } else {
-                // Protection violation from user mode → SIGSEGV.
+                // Protection violation from user mode → kill process then
+                // pick a new task; don't return to the dead process.
                 log::warn!(
                     "SIGSEGV: protection fault at {:?} (RIP={:#x}, err={:#x})",
                     faulting_va,
@@ -243,10 +254,7 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
                     state_ref.error_code,
                 );
                 use crate::process::thread_group::signal::SigId;
-                let mut task = current_task();
-                task.ctx.save_user_ctx(state);
-                task.process.deliver_signal(SigId::SIGSEGV);
-                drop(task);
+                crate::process::exit::kernel_exit_with_signal(SigId::SIGSEGV, false);
                 dispatch_userspace_task(state);
                 write_fs_base(unsafe { (*state).fs_base });
                 return state;
