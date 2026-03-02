@@ -1,5 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use alloc::{sync::Arc, vec::Vec};
+
 use crate::{
     drivers::timer::uptime,
     memory::uaccess::copy_to_user_slice,
@@ -12,6 +14,13 @@ use libkernel::memory::address::TUA;
 use libkernel::{error::Result, sync::condvar::WakeupType};
 use rand::{Rng, SeedableRng};
 
+/// A hardware or software source of entropy that the pool can query.
+pub trait EntropySource: Send + Sync {
+    /// Pull up to `buf.len()` bytes of entropy from this source.
+    /// Returns `(bytes_written, approx_entropy_bits)`.
+    fn get_entropy(&self, buf: &mut [u8]) -> (usize, usize);
+}
+
 /// Number of bytes generated before a per-CPU RNG reseeds from the entropy pool.
 const RESEED_BYTES: usize = 1024 * 1024;
 
@@ -19,6 +28,7 @@ pub struct EntropyPool {
     state: SpinLock<Blake2s256>,
     pool_waiters: CondVar<bool>,
     pool_bits: AtomicUsize,
+    sources: SpinLock<Vec<Arc<dyn EntropySource>>>,
 }
 
 impl EntropyPool {
@@ -27,6 +37,7 @@ impl EntropyPool {
             state: SpinLock::new(Blake2s256::default()),
             pool_waiters: CondVar::new(false),
             pool_bits: AtomicUsize::new(0),
+            sources: SpinLock::new(Vec::new()),
         }
     }
 
@@ -57,19 +68,37 @@ impl EntropyPool {
         );
     }
 
+    /// Poll all registered entropy sources and feed their output into the pool.
+    fn poll_sources(&self) {
+        let sources = self.sources.lock_save_irq();
+        let mut buf = [0u8; 64];
+
+        for source in sources.iter() {
+            let (written, bits) = source.get_entropy(&mut buf);
+            if written > 0 && bits > 0 {
+                self.add_entropy(&buf[..written], bits);
+            }
+        }
+    }
+
     /// Block until the pool has accumulated at least 256 bits of entropy, then
     /// return a 32-byte seed derived from the pool state.
     pub async fn extract_seed(&self) -> [u8; 32] {
+        self.poll_sources();
+
         self.pool_waiters
             .wait_until(|s| if *s { Some(()) } else { None })
             .await;
 
+        self.poll_sources();
         self.extract_seed_inner()
     }
 
     /// Non-blocking seed extraction.  Returns `None` if the pool has not yet
     /// accumulated 256 bits of entropy.
     pub fn try_extract_seed(&self) -> Option<[u8; 32]> {
+        self.poll_sources();
+
         if self.pool_bits.load(Ordering::Relaxed) < 256 {
             return None;
         }
@@ -95,6 +124,11 @@ impl EntropyPool {
 
 pub fn entropy_pool() -> &'static EntropyPool {
     ENTROPY_POOL.get_or_init(EntropyPool::new)
+}
+
+/// Register a new entropy source that the pool can pull from.
+pub fn register_entropy_source(source: Arc<dyn EntropySource>) {
+    entropy_pool().sources.lock_save_irq().push(source);
 }
 
 static ENTROPY_POOL: OnceLock<EntropyPool> = OnceLock::new();
