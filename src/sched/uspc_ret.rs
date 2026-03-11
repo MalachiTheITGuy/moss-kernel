@@ -14,6 +14,7 @@ use crate::{
 use alloc::boxed::Box;
 use core::{ptr, task::Poll};
 
+
 enum State {
     PickNewTask,
     ProcessKernelWork,
@@ -73,15 +74,27 @@ enum State {
 /// the scheduler or task management.
 pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
     let mut state = State::PickNewTask;
+    let mut kernel_work_iterations = 0;
+    const MAX_KERNEL_WORK_ITERATIONS: u32 = 100; // Prevent infinite loops
 
     'dispatch: loop {
         match state {
             State::PickNewTask => {
                 // Pick a new task, potentially context switching to a new task.
                 schedule();
+                kernel_work_iterations = 0; // Reset iteration counter for new task
                 state = State::ProcessKernelWork;
             }
             State::ProcessKernelWork => {
+                // Safeguard against infinite loops where a task keeps queueing kernel work
+                if kernel_work_iterations >= MAX_KERNEL_WORK_ITERATIONS {
+                    log::warn!("[Scheduler] Max kernel work iterations reached, switching to next task");
+                    state = State::PickNewTask;
+                    kernel_work_iterations = 0;
+                    continue;
+                }
+
+                    // ProcessKernelWork state
                 // First, let's handle signals. If there is any scheduled signal
                 // work (this has to be async to handle faults, etc).
                 let (signal_work, desc, is_idle) = {
@@ -159,6 +172,7 @@ pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
                 // Now let's handle any kernel work that's been spawned for this task.
                 let kern_work = current_task().ctx.take_kernel_work();
                 if let Some(mut kern_work) = kern_work {
+                    kernel_work_iterations += 1;
                     if is_idle {
                         panic!("Idle process should never have kernel work");
                     }
@@ -168,7 +182,7 @@ pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
                         .poll(&mut core::task::Context::from_waker(&create_waker(desc)))
                     {
                         Poll::Ready(()) => {
-                            let task = current_task();
+                            let mut task = current_task();
 
                             // If the task just exited (entered the finished
                             // state), don't return to it's userspace, instead,
@@ -179,11 +193,36 @@ pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
                                 continue;
                             }
 
-                            // Kernel work finished. Ensure we have no other new
-                            // work to process (i.e. a signal was rasied, trace
-                            // point was hit). We don't need to clear the kernel
-                            // context here as we used the *take* function
-                            // above.
+                            // Kernel work finished. Explicitly transition the task to Running
+                            // so it's ready for execution. This ensures tasks that were blocked
+                            // on I/O completion get re-scheduled promptly.
+                            {
+                                let mut task_state = task.state.lock_save_irq();
+                                match *task_state {
+                                    TaskState::Running | TaskState::Runnable => {
+                                        // Already in a runnable state, proceed
+                                    }
+                                    TaskState::Sleeping => {
+                                        // Task was sleeping waiting for I/O; transition to Running
+                                        // so the scheduler immediately picks it up
+                                        *task_state = TaskState::Running;
+                                    }
+                                    TaskState::Woken => {
+                                        // Already marked as woken, keep state as is
+                                    }
+                                    _ => {
+                                        // Finished or other state; don't interfere
+                                    }
+                                }
+                            }
+
+                            // Kernel work finished. Continue processing this task to ensure
+                            // any newly-required actions (signal delivery, task exit, etc)
+                            // are handled immediately while the task is still hot in the cache.
+                            // This prevents starvation of I/O-bound tasks that alternate
+                            // between kernel work (page faults) and short userspace runs.
+                            // Loop back to ProcessKernelWork instead of PickNewTask to give
+                            // this task multiple opportunities to progress before switching.
                             state = State::ProcessKernelWork;
                             continue;
                         }
@@ -199,7 +238,8 @@ pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
                             let mut task_state = task.state.lock_save_irq();
 
                             match *task_state {
-                                // Task is runnable or running, put it to sleep.
+                                // Task is runnable or running, put it to sleep. The waker
+                                // callback will transition this back to Runnable when I/O completes.
                                 TaskState::Running | TaskState::Runnable => {
                                     *task_state = TaskState::Sleeping;
                                 }
@@ -209,6 +249,7 @@ pub fn dispatch_userspace_task(ctx: *mut UserCtx) {
                                 // Transition back to `Running` since we're
                                 // ready to progress with more work.
                                 TaskState::Woken => {
+                                    // Task was woken while putting to sleep
                                     *task_state = TaskState::Running;
                                 }
                                 // Task finished concurrently while we were trying

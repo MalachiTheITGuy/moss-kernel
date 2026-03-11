@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, vec::Vec};
-use core::{future::poll_fn, iter, pin::pin, task::Poll, time::Duration};
+use core::{future::poll_fn, iter, pin::{Pin, pin}, task::Poll, time::Duration};
 use libkernel::{
     error::{KernelError, Result},
     memory::address::TUA,
@@ -160,6 +160,63 @@ pub struct PollFd {
 }
 
 unsafe impl UserCopyable for PollFd {}
+
+pub async fn sys_poll(ufds: TUA<PollFd>, nfds: u32, timeout_ms: i32) -> Result<usize> {
+    let task = current_task_shared();
+
+    let mut poll_fds = copy_obj_array_from_user(ufds, nfds as _).await?;
+
+    let timeout_dur: Option<Duration> = if timeout_ms < 0 {
+        None // infinite wait
+    } else {
+        Some(Duration::from_millis(timeout_ms as u64))
+    };
+
+    let mut timeout_fut: Option<Pin<Box<dyn core::future::Future<Output = ()> + Send>>> =
+        timeout_dur.map(|d| Box::pin(sleep(d)) as Pin<Box<dyn core::future::Future<Output = ()> + Send>>);
+
+    let fds = {
+        let fd_table = task.fd_table.lock_save_irq();
+        poll_fds
+            .iter()
+            .map(|poll_fd| fd_table.get(poll_fd.fd).ok_or(KernelError::BadFd))
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    let mut futs = Vec::new();
+    for (poll_fd, open_file) in poll_fds.iter_mut().zip(fds) {
+        let poll_fut = open_file.poll(poll_fd.events).await;
+        futs.push(Box::pin(async {
+            poll_fd.revents = poll_fut.await?;
+            Ok(())
+        }));
+    }
+
+    let num_ready = poll_fn(|cx| {
+        let mut num_ready = 0;
+        for fut in futs.iter_mut() {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(Ok(())) => num_ready += 1,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err::<_, KernelError>(e)),
+                Poll::Pending => continue,
+            }
+        }
+        if num_ready == 0 {
+            if let Some(ref mut t) = timeout_fut {
+                t.as_mut().poll(cx).map(|_| Ok(0))
+            } else {
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Ok(num_ready))
+        }
+    })
+    .await?;
+
+    drop(futs);
+    copy_objs_to_user(&poll_fds, ufds).await?;
+    Ok(num_ready)
+}
 
 pub async fn sys_ppoll(
     ufds: TUA<PollFd>,

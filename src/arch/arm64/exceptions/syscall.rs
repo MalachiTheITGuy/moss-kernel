@@ -493,7 +493,7 @@ pub async fn handle_syscall() {
         0x98 => sys_setfsgid(arg1 as _).map_err(|e| match e {}),
         0x9a => sys_setpgid(arg1 as _, Pgid(arg2 as _)),
         0x9b => sys_getpgid(arg1 as _),
-        0x9c => sys_getsid().await,
+        0x9c => sys_getsid(arg1 as _),
         0x9d => sys_setsid().await,
         0xa0 => sys_uname(TUA::from_value(arg1 as _)).await,
         0xa1 => sys_sethostname(TUA::from_value(arg1 as _), arg2 as _).await,

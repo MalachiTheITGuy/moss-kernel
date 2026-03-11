@@ -38,6 +38,9 @@ pub const EDOM: isize = -33;
 pub const ERANGE: isize = -34;
 pub const EWOULDBLOCK: isize = -EAGAIN;
 pub const ENOSYS: isize = -38;
+pub const ENOTEMPTY: isize = -39;
+pub const ELOOP: isize = -40;
+pub const ENAMETOOLONG: isize = -36;
 pub const EOPNOTSUPP: isize = -95;
 pub const ETIMEDOUT: isize = -110;
 
@@ -52,16 +55,32 @@ pub fn kern_err_to_syscall(err: KernelError) -> isize {
         KernelError::Fs(FsError::IsADirectory) => EISDIR,
         KernelError::Fs(FsError::NotADirectory) => ENOTDIR,
         KernelError::Fs(FsError::AlreadyExists) => EEXIST,
-        KernelError::Fs(FsError::InvalidInput) => EINVAL, // TODO: Is this right?
+        KernelError::Fs(FsError::InvalidInput) => EINVAL,
+        KernelError::Fs(FsError::PermissionDenied) => EACCES,
+        KernelError::Fs(FsError::Loop) => ELOOP,
+        KernelError::Fs(FsError::CrossDevice) => EXDEV,
+        KernelError::Fs(FsError::DirectoryNotEmpty) => ENOTEMPTY,
+        KernelError::Fs(_) => EIO,
         KernelError::NotATty => ENOTTY,
         KernelError::SeekPipe => ESPIPE,
         KernelError::NotSupported => ENOSYS,
+        KernelError::NotPermitted => EPERM,
         KernelError::NoMemory => ENOMEM,
         KernelError::TimedOut => ETIMEDOUT,
         KernelError::RangeError => ERANGE,
         KernelError::NoChildProcess => ECHILD,
+        KernelError::NoProcess => ESRCH,
         KernelError::OpNotSupported => EOPNOTSUPP,
         KernelError::Interrupted => EINTR,
-        e => todo!("{e}"),
+        KernelError::Exec(_) => ENOEXEC,
+        KernelError::InUse => EBUSY,
+        KernelError::TooLarge => EFBIG,
+        KernelError::NameTooLong => ENAMETOOLONG,
+        KernelError::BufferFull => ENOSPC,
+        KernelError::MappingError(_) => ENOMEM,
+        KernelError::Io(_) => EIO,
+        KernelError::Probe(_) => EIO,
+        KernelError::NoMemRegion => ENOMEM,
+        KernelError::Other(_) => EIO,
     }
 }

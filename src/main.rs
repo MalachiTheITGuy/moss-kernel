@@ -175,40 +175,27 @@ async fn launch_init(mut opts: KOptions) {
         let mut fd_table = task.fd_table.lock_save_irq();
 
         // stdin, stdout, stderr
-        log::debug!("inserting stdin console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
-        log::debug!("inserting stdout console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
-        log::debug!("inserting stderr console FD");
         fd_table
             .insert(console.clone())
             .expect("Could not clone FD");
-        log::debug!("done inserting fds");
     }
 
     #[cfg(test)]
     test_main();
 
-    log::debug!("about to drop task");
     drop(task);
-    log::debug!("dropped task");
 
-    log::debug!("building init_args");
     let mut init_args = vec![init.as_str().to_string()];
-    log::debug!("built init_args");
-    log::debug!("appending opts.init_args (len={})", opts.init_args.len());
-    init_args.append(&mut opts.init_args);
-    log::debug!("appended init_args, total len={}", init_args.len());
-
     init_args.append(&mut opts.init_args);
 
-    log::debug!("about to exec init: path={:?} args={:?}", init.as_path(), init_args);
+    log::info!("launching init: {:?} args={:?}", init.as_path(), init_args);
     let exec_fut = process::exec::kernel_exec(init.as_path(), inode, init_args, vec![]);
-    log::debug!("created exec future");
     exec_fut
         .await
         .expect("Could not launch init process");

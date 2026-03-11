@@ -4,7 +4,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 use libkernel::error::{KernelError, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 
 use crate::{
     drivers::Driver,
@@ -159,7 +159,7 @@ impl InterruptManager {
 
     pub fn handle_interrupt(&self) {
         let Some((handler, desc)) = self.get_active_handler() else {
-            warn!("IRQ fired for stale IRQ handle");
+            log::debug!("IRQ fired for stale IRQ handle");
             return;
         };
 

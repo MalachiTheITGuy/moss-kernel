@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "workspace": {
+    "name": "moss-kernel",
+    "createdAt": 1772399282137,
+    "preset": "minimal"
+  },
+  "authorizedRoots": [
+    "/home/ksnyder/Documents/moss-kernel"
+  ]
+}

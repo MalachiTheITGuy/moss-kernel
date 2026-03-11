@@ -4,10 +4,13 @@ use core::fmt::Display;
 use core::arch::global_asm;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::{PrivilegeLevel, VirtAddr};
+use crate::debug_serial_putchar;
+use libkernel::error::Result;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ExceptionState {
+    pub fs_base: u64,                                                              // FS_BASE MSR (saved by Rust handler, slot pushed by PUSH_REGS)
     pub rax: u64, pub rcx: u64, pub rdx: u64, pub rbx: u64, pub rbp: u64,
     pub rsi: u64, pub rdi: u64, pub r8: u64, pub r9: u64, pub r10: u64,
     pub r11: u64, pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
@@ -42,6 +45,47 @@ impl Display for ExceptionState {
 
 global_asm!(include_str!("trap.s"));
 
+/// Read the IA32_FS_BASE MSR (user-space FS segment base).
+#[inline]
+fn read_fs_base() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0xC0000100u32,
+            out("eax") lo,
+            out("edx") hi,
+            options(nostack, nomem),
+        );
+    }
+    (hi as u64) << 32 | lo as u64
+}
+
+/// Write the IA32_FS_BASE MSR (user-space FS segment base).
+#[inline]
+pub fn write_fs_base(val: u64) {
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC0000100u32,
+            in("eax") (val & 0xFFFF_FFFF) as u32,
+            in("edx") (val >> 32) as u32,
+            options(nostack, nomem),
+        );
+    }
+}
+
+/// Jump to userspace for the first time using a fully-populated `ExceptionState`.
+///
+/// Called from the boot path after `dispatch_userspace_task` has filled in
+/// `initial_ctx` with the init process's register state.  This replicates the
+/// epilogue of `exception_common` (POP_REGS + skip vector/error_code + iretq)
+/// without requiring a real hardware exception frame on entry.
+pub fn boot_jump_to_userspace_wrapper(ctx: &ExceptionState) -> ! {
+    unsafe { boot_jump_to_userspace(ctx as *const ExceptionState) }
+}
+
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
 unsafe extern "C" {
@@ -71,23 +115,152 @@ unsafe extern "C" {
     fn exc_syscall();
     fn exc_timer();
     fn exc_com1();
+    fn boot_jump_to_userspace(ctx: *const ExceptionState) -> !;
+    fn lstar_entry();
+
+    /// Writable scratch: holds kernel stack top (re-primed after each syscall).
+    static mut syscall_scratch_rsp: u64;
+    /// Read-only after boot: the permanent kernel stack top for SYSCALL.
+    static mut tss_kern_rsp_top: u64;
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut ExceptionState {
     let state_ref = unsafe { state.as_mut().unwrap() };
+
+    // Save the user FS_BASE from the MSR when coming from user space.
+    // The assembly stub pushed a placeholder $0; fill it with the real value.
+    let from_user = state_ref.cs & 0x3 != 0;
+    if from_user {
+        state_ref.fs_base = read_fs_base();
+    }
     
     let vector = state_ref.vector;
     
     if vector >= 32 && vector <= 255 {
+        // Save user context before handling the interrupt so the scheduler
+        // can switch to a different task if one becomes runnable (mirrors
+        // ARM64's el0_irq pattern).
+        if from_user {
+            use crate::sched::current::current_task;
+            current_task().ctx.save_user_ctx(state);
+        }
+
         if let Some(root) = crate::interrupts::get_interrupt_root() {
             crate::arch::x86_64::interrupts::set_pending_vector(vector as u8);
             root.handle_interrupt();
         }
-        
-        // Signal EOI if it's an APIC interrupt
-        // For now, we'll just assume it's handled.
+
+        // After handling the IRQ, run the scheduler so that any task woken
+        // by this interrupt (e.g. ash woken by a UART RX byte) gets to run.
+        // This is equivalent to ARM64's el0_irq calling dispatch_userspace_task.
+        if from_user {
+            use crate::sched::uspc_ret::dispatch_userspace_task;
+            dispatch_userspace_task(state);
+            write_fs_base(unsafe { (*state).fs_base });
+            return state;
+        }
     } else {
+        // ── User-space demand paging ────────────────────────────────────────
+        // For page faults that originate from user mode, attempt to resolve
+        // them via the VMA / demand-paging infrastructure rather than
+        // crashing. This must come *before* the generic error log below.
+        if vector == 14 && from_user {
+            use crate::memory::fault::{FaultResolution, handle_demand_fault};
+            use crate::sched::current::current_task;
+            use crate::sched::uspc_ret::dispatch_userspace_task;
+            use libkernel::memory::address::VA;
+            use libkernel::memory::proc_vm::vmarea::AccessKind;
+            use alloc::boxed::Box;
+
+            let cr2 = x86_64::registers::control::Cr2::read()
+                .unwrap_or(x86_64::VirtAddr::new(0));
+            let faulting_va = VA::from_value(cr2.as_u64() as usize);
+
+            // Determine the access kind from the error-code bits:
+            //   bit 4 (I/D) = instruction fetch, bit 1 (W/R) = write, else read.
+            let access_kind = if state_ref.error_code & 0x10 != 0 {
+                AccessKind::Execute
+            } else if state_ref.error_code & 0x2 != 0 {
+                AccessKind::Write
+            } else {
+                AccessKind::Read
+            };
+
+            // Attempt demand-paging for not-present faults (bit 0 == 0) or
+            // present write faults (bit 0 == 1 and bit 1 == 1).
+            // Protection violations for read or execute are not handled and fall
+            // through to SIGSEGV below.
+            if state_ref.error_code & 0x1 == 0 || (state_ref.error_code & 0x1 == 1 && state_ref.error_code & 0x2 != 0) {
+                let proc_vm = current_task().vm.clone();
+                match handle_demand_fault(proc_vm, faulting_va, access_kind) {
+                    Ok(FaultResolution::Resolved) => {
+                        // Mapped synchronously; restore FS_BASE and retry.
+                        write_fs_base(state_ref.fs_base);
+                        return state;
+                    }
+                        Ok(FaultResolution::Deferred(io_fut)) => {
+                            // Needs I/O; schedule as kernel work and switch tasks.
+                            {
+                                let mut task = current_task();
+                                task.ctx.save_user_ctx(state);
+                                // The io_fut is Box<dyn Future<Output=Result<()>>>
+                                // We already have it as a Box. Just cast it to Pin<Box<_>> and await
+                                let pinned_fut: core::pin::Pin<Box<dyn core::future::Future<Output=libkernel::error::Result<()>> + Send + 'static>>
+                                    = core::pin::Pin::from(io_fut);
+                                task.ctx.put_kernel_work(Box::pin(async move {
+                                    // Kernel work started
+                                    match pinned_fut.await {
+                                        Ok(()) => {
+                                            // Kernel work completed
+                                        }
+                                        Err(e) => {
+                                            log::error!("page fault deferred resolution failed: {:?}", e);
+                                        }
+                                    }
+                                }));
+                                // Kernel work queued, about to call dispatch
+                            }
+                            dispatch_userspace_task(state);
+                            // Dispatch returned
+                            // dispatch_userspace_task restored the context of the
+                            // task to run; update FS_BASE and return.
+                            write_fs_base(unsafe { (*state).fs_base });
+                            return state;
+                    }
+                    Ok(FaultResolution::Denied) | Err(_) => {
+                        // Out-of-bounds or permission denied → kill process then
+                        // pick a new task; don't return to the dead process.
+                        log::warn!(
+                            "SIGSEGV: user fault at {:?} (RIP={:#x}, err={:#x})",
+                            faulting_va,
+                            state_ref.rip,
+                            state_ref.error_code,
+                        );
+                        use crate::process::thread_group::signal::SigId;
+                        crate::process::exit::kernel_exit_with_signal(SigId::SIGSEGV, false);
+                        dispatch_userspace_task(state);
+                        write_fs_base(unsafe { (*state).fs_base });
+                        return state;
+                    }
+                }
+            } else {
+                // Protection violation from user mode → kill process then
+                // pick a new task; don't return to the dead process.
+                log::warn!(
+                    "SIGSEGV: protection fault at {:?} (RIP={:#x}, err={:#x})",
+                    faulting_va,
+                    state_ref.rip,
+                    state_ref.error_code,
+                );
+                use crate::process::thread_group::signal::SigId;
+                crate::process::exit::kernel_exit_with_signal(SigId::SIGSEGV, false);
+                dispatch_userspace_task(state);
+                write_fs_base(unsafe { (*state).fs_base });
+                return state;
+            }
+        }
+
         // Fetch the faulting address if this is a page fault so we have
         // something concrete to debug with.  The `read()` helper returns a
         // `Result` because some crate configurations make `VirtAddr` validation
@@ -99,7 +272,6 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         // Log extra registers to help diagnose memcpy faults.
         let rsi = state_ref.rsi;
         let rdi = state_ref.rdi;
-        log::error!("regs: RSI=0x{:016x} RDI=0x{:016x}", rsi, rdi);
 
         // ── Kernel upper-half PML4 propagation ──────────────────────────────
         // When a new kernel virtual mapping is installed (e.g. for a ramdisk)
@@ -153,6 +325,7 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
             }
         }
 
+        log::error!("regs: RSI=0x{:016x} RDI=0x{:016x}", rsi, rdi);
         log::error!(
             "x86_64 exception occurred:\n{}CR2: 0x{:016x}\n",
             state_ref,
@@ -176,6 +349,39 @@ extern "C" fn x86_64_exception_handler(state: *mut ExceptionState) -> *mut Excep
         if state_ref.cs & 0x3 == 0 {
             panic!("Kernel exception");
         }
+
+        // ── Deliver a signal for unhandled user-mode exceptions ──────────────
+        // Any exception that reaches here from ring 3 and wasn't handled above
+        // (e.g. #UD, #GP) gets mapped to a POSIX signal and delivered.
+        {
+            use crate::process::thread_group::signal::SigId;
+            use crate::sched::current::current_task;
+            use crate::sched::uspc_ret::dispatch_userspace_task;
+
+            // Map the CPU vector to a signal.
+            let sig = match vector {
+                0 | 4 | 5 => SigId::SIGFPE,  // #DE divide error, #OF overflow, #BR bound range
+                6 => SigId::SIGILL,           // #UD invalid opcode
+                11 | 12 | 13 => SigId::SIGSEGV, // #NP, #SS, #GP
+                _ => SigId::SIGSEGV,
+            };
+
+            let mut task = current_task();
+            task.ctx.save_user_ctx(state);
+            task.process.deliver_signal(sig);
+            drop(task);
+            dispatch_userspace_task(state);
+            write_fs_base(unsafe { (*state).fs_base });
+            return state;
+        }
+    } // end of exception (non-IRQ) handler block
+
+    // Restore the user FS_BASE MSR when returning to user space.
+    if from_user {
+        write_fs_base(state_ref.fs_base);
+    } else {
+        // If we're returning to a kernel thread, ensure it has the right CS
+        state_ref.cs = crate::arch::x86_64::KERNEL_CS;
     }
 
     state

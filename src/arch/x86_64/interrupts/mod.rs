@@ -1,7 +1,7 @@
 use crate::interrupts::{InterruptController, InterruptDescriptor, InterruptConfig, InterruptContext};
 use libkernel::error::Result;
 use crate::sync::SpinLock;
-use alloc::{sync::Arc, boxed::Box};
+use alloc::{sync::Arc, boxed::Box, collections::BTreeMap};
 use crate::interrupts::InterruptManager;
 use x86_64::VirtAddr;
 use crate::per_cpu_private;
@@ -14,17 +14,23 @@ const LAPIC_VIRT_BASE: u64 = 0xffff_8000_fee0_0000;
 pub mod apic;
 use self::apic::{LocalApic, ApicTimer};
 
+pub mod ioapic;
+use self::ioapic::IoApic;
+
 per_cpu_private! {
     static PENDING_VECTOR: Option<u8> = || None;
 }
 
 pub struct X86InterruptController {
     lapic: LocalApic,
+    ioapic: IoApic,
+    /// Maps CPU vector number → ISA IRQ number.
+    vector_to_irq: BTreeMap<u8, usize>,
 }
 
 impl X86InterruptController {
     pub fn new() -> Self {
-        // Disable legacy PIC
+        // Disable legacy 8259 PIC so its IRQs don't spuriously fire.
         unsafe {
             core::arch::asm!(
                 "outb %al, %dx", 
@@ -40,18 +46,22 @@ impl X86InterruptController {
 
         let lapic = LocalApic::new(VirtAddr::new(LAPIC_VIRT_BASE));
         lapic.init();
-        Self { lapic }
+        Self {
+            lapic,
+            ioapic: IoApic::new(),
+            vector_to_irq: BTreeMap::new(),
+        }
     }
 }
 
 pub struct X86InterruptContext {
-    vector: u8,
+    irq: usize,
     lapic: LocalApic,
 }
 
 impl InterruptContext for X86InterruptContext {
     fn descriptor(&self) -> InterruptDescriptor {
-        InterruptDescriptor::Spi(self.vector as usize)
+        InterruptDescriptor::Spi(self.irq)
     }
 }
 
@@ -62,18 +72,28 @@ impl Drop for X86InterruptContext {
 }
 
 impl InterruptController for X86InterruptController {
-    fn enable_interrupt(&mut self, _i: InterruptConfig) {
-        // TODO: Handle I/O APIC
+    fn enable_interrupt(&mut self, config: InterruptConfig) {
+        if let InterruptDescriptor::Spi(irq) = config.descriptor {
+            // Map ISA IRQ N to CPU vector 0x20+N (matching the IDT stubs in trap.s).
+            let vector = 0x20u8 + irq as u8;
+            self.vector_to_irq.insert(vector, irq);
+            // Route this ISA IRQ through the I/O APIC to the BSP (APIC ID 0).
+            self.ioapic.route_irq(irq as u8, vector, 0);
+        }
     }
 
-    fn disable_interrupt(&mut self, _i: InterruptDescriptor) {
-        // TODO
+    fn disable_interrupt(&mut self, desc: InterruptDescriptor) {
+        if let InterruptDescriptor::Spi(irq) = desc {
+            self.ioapic.mask_irq(irq as u8);
+        }
     }
 
     fn read_active_interrupt(&mut self) -> Option<Box<dyn InterruptContext>> {
         let vector = PENDING_VECTOR.borrow_mut().take()?;
+        // Translate the CPU vector back to the ISA IRQ the UART was claimed under.
+        let irq = *self.vector_to_irq.get(&vector).unwrap_or(&(vector as usize));
         Some(Box::new(X86InterruptContext {
-            vector,
+            irq,
             lapic: LocalApic::new(VirtAddr::new(LAPIC_VIRT_BASE)),
         }))
     }

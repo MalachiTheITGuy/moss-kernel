@@ -45,7 +45,9 @@ mod auxv;
 const LINKER_BIAS: usize = 0x0000_7000_0000_0000;
 const PROG_BIAS: usize = 0x0000_5000_0000_0000;
 
-const STACK_END: usize = 0x0000_8000_0000_0000;
+// User stack - placed in upper half of 57-bit address space (0x8000_0000_0000_0000+)
+// Must be page-aligned and leave room for guard page at the top
+const STACK_END: usize = 0xffff_ffff_ffff_f000;
 const STACK_SZ: usize = 0x2000 * 0x400;
 const STACK_START: usize = STACK_END - STACK_SZ;
 
@@ -89,6 +91,7 @@ async fn exec_elf(
     argv: Vec<String>,
     envp: Vec<String>,
 ) -> Result<()> {
+    log::info!("exec: {:?} argv={:?}", path, argv);
     // Read ELF header
     let mut buf = [0u8; core::mem::size_of::<elf::FileHeader64<LittleEndian>>()];
     inode.read_at(0, &mut buf).await?;
@@ -332,8 +335,8 @@ fn setup_user_stack(
     // The top of the info block must be 16-byte aligned. The stack pointer on
     // entry to the new process must also be 16-byte aligned.
     let strings_base_va = STACK_END - total_string_size;
-    let final_sp_unaligned = strings_base_va - info_block_size;
-    let final_sp_val = final_sp_unaligned & !0xF; // Align down to 16 bytes
+    let final_sp_unaligned = (strings_base_va - info_block_size) & !0x7;
+    let final_sp_val = final_sp_unaligned & !0xF; // 16-byte align
 
     let total_stack_size = STACK_END - final_sp_val;
     if total_stack_size > STACK_SZ {
@@ -417,7 +420,8 @@ async fn process_interp(interp_path: String, vmas: &mut Vec<VMArea>) -> Result<V
         iendian,
     );
 
-    let interp_entry = VA::from_value(LINKER_BIAS + interp_elf.e_entry(iendian) as usize);
+    let raw_entry = interp_elf.e_entry(iendian) as usize;
+    let interp_entry = VA::from_value(LINKER_BIAS + raw_entry);
 
     Ok(interp_entry)
 }

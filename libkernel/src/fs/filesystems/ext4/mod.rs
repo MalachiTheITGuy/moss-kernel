@@ -155,13 +155,22 @@ where
     }
 
     async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let inner = self.inner.lock().await;
-        // Must be a regular file.
-        if inner.file_type() != ext4_view::FileType::Regular {
-            return Err(KernelError::NotSupported);
-        }
+        // Acquire the inode lock just long enough to inspect the metadata and
+        // clone the underlying `ext4_view::Inode`.  Holding the mutex across
+        // an `.await` is dangerous since other asynchronous operations (such
+        // as `File::seek_to`/`read_bytes`) may attempt to lock the same mutex
+        // again, leading to a self-deadlock.  By limiting the scope of the
+        // guard we avoid that class of bugs.
+        let (file_size, inner_clone) = {
+            let inner = self.inner.lock().await;
+            // Must be a regular file.
+            if inner.file_type() != ext4_view::FileType::Regular {
+                return Err(KernelError::NotSupported);
+            }
 
-        let file_size = inner.size_in_bytes();
+            let file_size = inner.size_in_bytes();
+            (file_size, inner.clone())
+        }; // guard dropped here
 
         // Past EOF = nothing to read.
         if offset >= file_size {
@@ -172,7 +181,7 @@ where
         let to_read = core::cmp::min(buf.len() as u64, file_size - offset) as usize;
 
         let fs = self.fs_ref.upgrade().unwrap();
-        let mut file = File::open_inode(&fs.inner, inner.clone())?;
+        let mut file = File::open_inode(&fs.inner, inner_clone)?;
 
         file.seek_to(offset).await?;
 
@@ -192,14 +201,22 @@ where
     }
 
     async fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize> {
-        let mut inner = self.inner.lock().await;
-        // Must be a regular file.
-        if inner.file_type() != ext4_view::FileType::Regular {
-            return Err(KernelError::NotSupported);
-        }
+        // Grab the inode metadata and clone it while holding the lock, then
+        // immediately drop the guard.  This ensures we don't hold the mutex
+        // across any `.await` points below.
+        let inner_clone = {
+            let mut inner = self.inner.lock().await;
+            if inner.file_type() != ext4_view::FileType::Regular {
+                return Err(KernelError::NotSupported);
+            }
+            // Note: we intentionally don't keep `inner` around because the
+            // rest of the operation (seek/write) may also lock the same
+            // mutex internally.
+            inner.clone()
+        };
 
         let fs = self.fs_ref.upgrade().unwrap();
-        let mut file = File::open_inode(&fs.inner, inner.clone())?;
+        let mut file = File::open_inode(&fs.inner, inner_clone)?;
 
         file.seek_to(offset).await?;
 
@@ -215,8 +232,13 @@ where
             total_written += bytes_written;
         }
 
-        // Update inode metadata in case size changed.
-        *inner = file.into_inode();
+        // Now that we've completed the write, update the stored inode metadata
+        // in case the file size changed.  This requires grabbing the lock once
+        // more, but that happens after all awaited operations.
+        {
+            let mut inner = self.inner.lock().await;
+            *inner = file.into_inode();
+        }
 
         Ok(total_written)
     }
