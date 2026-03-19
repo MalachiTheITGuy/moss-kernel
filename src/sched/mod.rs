@@ -10,16 +10,16 @@ use core::fmt::Debug;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
 use core::time::Duration;
-use current::{CUR_TASK_PTR, current_task};
 use libkernel::error::Result;
 use log::warn;
 use runqueue::RunQueue;
 use sched_task::{RunnableTask, Work};
+use syscall_ctx::ProcessCtx;
 use waker::create_waker;
 
-pub mod current;
 mod runqueue;
 pub mod sched_task;
+pub mod syscall_ctx;
 pub mod uspc_ret;
 pub mod waker;
 
@@ -130,8 +130,8 @@ fn schedule() {
     drop(deferred);
 }
 
-pub fn spawn_kernel_work(fut: impl Future<Output = ()> + 'static + Send) {
-    current_task().ctx.put_kernel_work(Box::pin(fut));
+pub fn spawn_kernel_work(ctx: &mut ProcessCtx, fut: impl Future<Output = ()> + 'static + Send) {
+    ctx.task_mut().ctx.put_kernel_work(Box::pin(fut));
 }
 
 #[cfg(feature = "smp")]
@@ -218,11 +218,11 @@ impl SchedState {
         {
             let current = self.run_q.current_mut();
 
-            current.task.update_accounting(Some(now_inst));
+            current.work.task.update_accounting(Some(now_inst));
 
             // Reset accounting baseline after updating stats to avoid double-counting
             // the same time interval on the next scheduler tick.
-            current.task.reset_last_account(now_inst);
+            current.work.reset_last_account(now_inst);
         }
 
         self.run_q.schedule(now_inst)
@@ -270,7 +270,7 @@ pub fn sys_sched_yield() -> Result<usize> {
 }
 
 pub fn current_work() -> Arc<Work> {
-    SCHED_STATE.borrow().run_q.current().task.clone()
+    SCHED_STATE.borrow().run_q.current().work.clone()
 }
 
 pub fn current_work_waker() -> Waker {
