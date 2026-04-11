@@ -14,7 +14,7 @@ use crate::{
     memory::{
         PAGE_SIZE,
         address::{TPA, TVA, VA},
-        permissions::PtePermissions,
+        paging::permissions::PtePermissions,
         region::{PhysMemoryRegion, VirtMemoryRegion},
     },
 };

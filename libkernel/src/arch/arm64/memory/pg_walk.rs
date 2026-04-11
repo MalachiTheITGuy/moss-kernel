@@ -189,7 +189,7 @@ mod tests {
     use crate::error::KernelError;
     use crate::memory::PAGE_SIZE;
     use crate::memory::address::{PA, VA};
-    use crate::memory::permissions::PtePermissions;
+    use crate::memory::paging::permissions::PtePermissions;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]

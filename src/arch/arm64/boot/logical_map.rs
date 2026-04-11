@@ -16,7 +16,7 @@ use libkernel::{
     error::Result,
     memory::{
         address::{TPA, TVA},
-        permissions::PtePermissions,
+        paging::permissions::PtePermissions,
     },
 };
 

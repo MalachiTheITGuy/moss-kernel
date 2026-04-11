@@ -6,7 +6,7 @@ use tock_registers::{register_bitfields, registers::InMemoryRegister};
 
 use crate::memory::PAGE_SHIFT;
 use crate::memory::address::{PA, VA};
-use crate::memory::permissions::PtePermissions;
+use crate::memory::paging::permissions::PtePermissions;
 use crate::memory::region::PhysMemoryRegion;
 
 /// Trait for common behavior across different types of page table entries.

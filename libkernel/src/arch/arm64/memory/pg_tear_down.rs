@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::arch::arm64::memory::pg_tables::tests::TestHarness;
     use crate::memory::address::VA;
-    use crate::memory::permissions::PtePermissions;
+    use crate::memory::paging::permissions::PtePermissions;
     use std::collections::HashSet;
 
     fn capture_freed_pages<PM: PageTableMapper>(

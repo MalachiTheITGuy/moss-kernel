@@ -10,7 +10,6 @@ use aarch64_cpu::{
 };
 use alloc::vec::Vec;
 use libkernel::{
-    PageInfo, UserAddressSpace,
     arch::arm64::memory::{
         pg_descriptors::{L3Descriptor, MemoryType, PaMapper, PageTableEntry},
         pg_tables::{
@@ -24,7 +23,8 @@ use libkernel::{
         PAGE_SIZE,
         address::{TPA, VA},
         page::PageFrame,
-        permissions::PtePermissions,
+        paging::permissions::PtePermissions,
+        proc_vm::address_space::{PageInfo, UserAddressSpace},
         region::{PhysMemoryRegion, VirtMemoryRegion},
     },
 };

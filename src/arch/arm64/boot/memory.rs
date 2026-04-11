@@ -14,7 +14,7 @@ use libkernel::{
     memory::{
         PAGE_SIZE,
         address::{PA, TPA, VA},
-        permissions::PtePermissions,
+        paging::permissions::PtePermissions,
         region::{PhysMemoryRegion, VirtMemoryRegion},
     },
 };

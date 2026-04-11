@@ -10,7 +10,7 @@ use libkernel::arch::arm64::memory::pg_tables::{
 use libkernel::arch::arm64::memory::tlb::NullTlbInvalidator;
 use libkernel::error::{KernelError, Result};
 use libkernel::memory::address::{AddressTranslator, IdentityTranslator, PA, TPA, TVA};
-use libkernel::memory::permissions::PtePermissions;
+use libkernel::memory::paging::permissions::PtePermissions;
 use libkernel::memory::region::PhysMemoryRegion;
 use libkernel::memory::{PAGE_MASK, PAGE_SIZE};
 use tock_registers::interfaces::{ReadWriteable, Writeable};
