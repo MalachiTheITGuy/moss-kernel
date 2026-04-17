@@ -204,6 +204,13 @@ where
         Err(MapError::VirtNotAligned)?;
     }
 
+    // x86_64 canonical address check: bits [63:48] must be a sign-extension of
+    // bit 47. Check that here.
+    let start = attrs.virt.start_address().value() as i64;
+    if (start << 16) >> 16 != start {
+        Err(MapError::NonCanonicalAddress)?;
+    }
+
     while attrs.virt.size() > 0 {
         let va = attrs.virt.start_address();
 
@@ -862,6 +869,44 @@ pub mod tests {
                 &mut harness.create_map_ctx()
             ),
             Err(KernelError::MappingError(MapError::VirtNotAligned))
+        ));
+    }
+
+    #[test]
+    fn test_map_non_canonical_va_should_fail() {
+        let mut harness = TestHarness::new(1);
+        let phys = PhysMemoryRegion::new(PA::from_value(0x8_0000), PAGE_SIZE);
+
+        // Bit 47 is 0 but bits [63:48] are not — non-canonical hole address.
+        let bad_virt = VirtMemoryRegion::new(VA::from_value(0x0001_0000_0000_0000), PAGE_SIZE);
+        assert!(matches!(
+            map_range(
+                harness.inner.root_table,
+                MapAttributes {
+                    phys,
+                    virt: bad_virt,
+                    mem_type: MemoryType::WB,
+                    perms: PtePermissions::rw(false),
+                },
+                &mut harness.create_map_ctx()
+            ),
+            Err(KernelError::MappingError(MapError::NonCanonicalAddress))
+        ));
+
+        // Bit 47 is 1 but bits [63:48] are not all 1s — another non-canonical address.
+        let bad_virt2 = VirtMemoryRegion::new(VA::from_value(0x0000_FFFF_0000_0000), PAGE_SIZE);
+        assert!(matches!(
+            map_range(
+                harness.inner.root_table,
+                MapAttributes {
+                    phys,
+                    virt: bad_virt2,
+                    mem_type: MemoryType::WB,
+                    perms: PtePermissions::rw(false),
+                },
+                &mut harness.create_map_ctx()
+            ),
+            Err(KernelError::MappingError(MapError::NonCanonicalAddress))
         ));
     }
 
