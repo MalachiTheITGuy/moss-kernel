@@ -70,9 +70,17 @@ where
             };
 
             if let Some(next_desc) = desc.next_table_address() {
-                let sub_region = VirtMemoryRegion::new(entry_va, table_coverage)
-                    .intersection(region)
-                    .expect("Sub region should overlap with parent region");
+                // `entry_va + table_coverage` can overflow for the last entry
+                // at each level (e.g. PML4 entry 511 on x86_64). Compute the
+                // intersection with saturating arithmetic instead of
+                // constructing an unrepresentable VirtMemoryRegion.
+                let entry_end = entry_va.value().saturating_add(table_coverage);
+                let sub_start = region.start_address().value().max(entry_va.value());
+                let sub_end = region.end_address().value().min(entry_end);
+                let sub_region = VirtMemoryRegion::from_start_end_address(
+                    VA::from_value(sub_start),
+                    VA::from_value(sub_end),
+                );
 
                 <T::Descriptor as TableMapper>::NextLevel::walk(
                     next_desc, sub_region, ctx, modifier,
