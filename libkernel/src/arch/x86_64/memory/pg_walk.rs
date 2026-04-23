@@ -391,6 +391,101 @@ mod tests {
     }
 
     #[test]
+    fn walk_last_pml4_entry() {
+        // The last PML4 entry (index 511) covers [0xffff_ff80_0000_0000, END).
+        // Computing `entry_va + coverage` used to overflow usize for this entry.
+        let mut harness = TestHarness::new(4);
+
+        let va = VA::from_value(0xffffffff80000000);
+        let pa = 0x8_0000;
+
+        harness
+            .map_4k_pages(pa, va.value(), 1, PtePermissions::ro(false))
+            .unwrap();
+        harness
+            .map_4k_pages(
+                pa + PAGE_SIZE,
+                va.value() + PAGE_SIZE,
+                1,
+                PtePermissions::ro(false),
+            )
+            .unwrap();
+
+        let mut was_called = false;
+        walk_and_modify_region(
+            harness.inner.root_table,
+            VirtMemoryRegion::new(va.add_pages(1), PAGE_SIZE),
+            &mut harness.inner.create_walk_ctx(),
+            &mut |_va, desc: PTE| {
+                was_called = true;
+                assert_eq!(desc.mapped_address().unwrap().value(), pa + PAGE_SIZE);
+                desc
+            },
+        )
+        .unwrap();
+
+        assert!(was_called);
+    }
+
+    #[test]
+    fn walk_last_pdpt_entry() {
+        // The last PDPT entry (index 511 within PML4[511]) covers the last 1 GiB:
+        // [0xffff_ffff_c000_0000, END). `entry_va + coverage` overflowed usize here.
+        let mut harness = TestHarness::new(4);
+
+        let va = VA::from_value(0xffffffff_c0000000);
+        let pa = 0x9_0000;
+
+        harness
+            .map_4k_pages(pa, va.value(), 1, PtePermissions::ro(false))
+            .unwrap();
+
+        let mut was_called = false;
+        walk_and_modify_region(
+            harness.inner.root_table,
+            VirtMemoryRegion::new(va, PAGE_SIZE),
+            &mut harness.inner.create_walk_ctx(),
+            &mut |_va, desc: PTE| {
+                was_called = true;
+                assert_eq!(desc.mapped_address().unwrap().value(), pa);
+                desc
+            },
+        )
+        .unwrap();
+
+        assert!(was_called);
+    }
+
+    #[test]
+    fn walk_last_pd_entry() {
+        // The last PD entry (index 511 within PDPT[511]/PML4[511]) covers the last 2 MiB:
+        // [0xffff_ffff_ffe0_0000, END). `entry_va + coverage` overflowed usize here.
+        let mut harness = TestHarness::new(4);
+
+        let va = VA::from_value(0xffffffff_ffe00000);
+        let pa = 0xa_0000;
+
+        harness
+            .map_4k_pages(pa, va.value(), 1, PtePermissions::ro(false))
+            .unwrap();
+
+        let mut was_called = false;
+        walk_and_modify_region(
+            harness.inner.root_table,
+            VirtMemoryRegion::new(va, PAGE_SIZE),
+            &mut harness.inner.create_walk_ctx(),
+            &mut |_va, desc: PTE| {
+                was_called = true;
+                assert_eq!(desc.mapped_address().unwrap().value(), pa);
+                desc
+            },
+        )
+        .unwrap();
+
+        assert!(was_called);
+    }
+
+    #[test]
     fn walk_at_canonical_kernel_va() {
         let mut harness = TestHarness::new(4);
 
