@@ -1,7 +1,6 @@
-use super::{
-    Driver, DriverManager,
-    probe::{DeviceDescriptor, DeviceMatchType, ProbeFn},
-};
+use super::{Driver, DriverManager};
+#[cfg(target_arch = "aarch64")]
+use super::probe::{DeviceDescriptor, DeviceMatchType, ProbeFn};
 use crate::{drivers::DM, sync::SpinLock};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use libkernel::error::{KernelError, ProbeError, Result};
@@ -10,23 +9,27 @@ use log::error;
 pub type InitFunc = fn(&mut PlatformBus, &mut DriverManager) -> Result<()>;
 
 pub struct PlatformBus {
+    #[cfg(target_arch = "aarch64")]
     probers: BTreeMap<DeviceMatchType, Vec<ProbeFn>>,
 }
 
 impl PlatformBus {
     pub const fn new() -> Self {
         Self {
+            #[cfg(target_arch = "aarch64")]
             probers: BTreeMap::new(),
         }
     }
 
     /// Called by driver `init` functions to register their ability to probe for
     /// certain hardware.
+    #[cfg(target_arch = "aarch64")]
     pub fn register_platform_driver(&mut self, match_type: DeviceMatchType, probe_fn: ProbeFn) {
         self.probers.entry(match_type).or_default().push(probe_fn);
     }
 
     /// Called by the FDT prober to find the right driver and probe.
+    #[cfg(target_arch = "aarch64")]
     pub fn probe_device(
         &self,
         dm: &mut DriverManager,

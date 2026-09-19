@@ -3,7 +3,12 @@
 //! Handles 4-level page table manipulation, TLB management,
 //! and memory-mapped I/O region setup.
 
-use libkernel::memory::address::{PA, VA};
+use libkernel::memory::{
+    address::{PA, VA},
+    paging::permissions::PtePermissions,
+    proc_vm::address_space::KernAddressSpace,
+    region::{PhysMemoryRegion, VirtMemoryRegion},
+};
 
 /// The x86_64 MMU.
 pub struct Mmu;
@@ -68,6 +73,53 @@ impl Mmu {
         unsafe {
             core::arch::asm!("mov {cr3}, cr3", cr3 = out(reg) cr3);
         }
-        PA::new(cr3 as usize).unwrap()
+        PA::from_value(cr3 as usize)
     }
+}
+
+/// x86_64 kernel address space wrapping an `X86_64AddressSpace`.
+pub struct X86_64KernelAddressSpace {
+    inner: super::address_space::X86_64AddressSpace,
+}
+
+impl X86_64KernelAddressSpace {
+    /// Create a new kernel address space.
+    pub fn new() -> Self {
+        Self {
+            inner: super::address_space::X86_64AddressSpace::new_kernel(),
+        }
+    }
+}
+
+impl KernAddressSpace for X86_64KernelAddressSpace {
+    fn map_mmio(
+        &mut self,
+        _region: PhysMemoryRegion,
+    ) -> libkernel::error::Result<VA> {
+        // TODO(#15): Map an MMIO region using 4-level page tables.
+        todo!("KernAddressSpace::map_mmio")
+    }
+
+    fn map_normal(
+        &mut self,
+        _phys_range: PhysMemoryRegion,
+        _virt_range: VirtMemoryRegion,
+        _perms: PtePermissions,
+    ) -> libkernel::error::Result<()> {
+        // TODO(#15): Map normal memory using 4-level page tables.
+        todo!("KernAddressSpace::map_normal")
+    }
+}
+
+/// Global kernel address space, protected by a spinlock.
+static KERN_ADDR_SPACE: crate::sync::SpinLock<X86_64KernelAddressSpace> =
+    crate::sync::SpinLock::new(X86_64KernelAddressSpace {
+        inner: super::address_space::X86_64AddressSpace {
+            pml4: PA::from_value(0),
+        },
+    });
+
+/// Obtain a reference to the global kernel address space lock.
+pub fn kern_address_space() -> &'static crate::sync::SpinLock<X86_64KernelAddressSpace> {
+    &KERN_ADDR_SPACE
 }

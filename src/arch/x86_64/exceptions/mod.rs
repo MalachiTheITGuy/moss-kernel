@@ -6,10 +6,10 @@
 
 /// Set up the Interrupt Descriptor Table (IDT).
 ///
-//! # Safety
-//!
-//! This function modifies the CPU's IDTR register. It must only be
-//! called once during boot, with interrupts disabled.
+/// # Safety
+///
+/// This function modifies the CPU's IDTR register. It must only be
+/// called once during boot, with interrupts disabled.
 pub unsafe fn setup_idt() {
     // TODO(#16): Populate all 256 IDT entries.
     // TODO(#16): Set up exception vectors (#DE, #DB, #NMI, #BP, #OF, #BR,

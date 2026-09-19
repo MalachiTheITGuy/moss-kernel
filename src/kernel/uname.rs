@@ -53,7 +53,8 @@ fn copy_str_to_c_char_arr(dest: &mut [c_char], src: &[u8]) {
     unsafe {
         let dest_ptr = dest.as_mut_ptr();
         let dest_slice = core::slice::from_raw_parts_mut(dest_ptr, dest.len());
-        dest_slice[..len].copy_from_slice(&src[..len]);
+        let src_i8: &[i8] = core::slice::from_raw_parts(src.as_ptr() as *const i8, src.len());
+        dest_slice[..len].copy_from_slice(&src_i8[..len]);
     }
     // The rest of `dest` will remain zeroed from the initial `mem::zeroed`.
 }

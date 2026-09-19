@@ -5,7 +5,6 @@
 //! `user_regs_struct` for x86_64.
 
 use crate::memory::uaccess::UserCopyable;
-use core::arch::x86_64::Xmm Registers;
 
 /// x86_64 general-purpose register set for ptrace.
 ///
@@ -59,6 +58,39 @@ impl Default for X86_64PtraceGPRegs {
 }
 
 impl X86_64PtraceGPRegs {
+    /// Create a new register set with the given instruction and stack pointers.
+    pub fn new(rip: u64, rsp: u64) -> Self {
+        Self {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            rbp: 0,
+            rbx: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rax: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            orig_rax: 0,
+            rip,
+            cs: 0,
+            rflags: 0,
+            rsp,
+            ss: 0,
+            fs_base: 0,
+            gs_base: 0,
+            ds: 0,
+            es: 0,
+            fs: 0,
+            gs: 0,
+        }
+    }
+
     /// Get the instruction pointer.
     pub fn ip(&self) -> usize {
         self.rip as usize
@@ -72,5 +104,59 @@ impl X86_64PtraceGPRegs {
     /// Get the base pointer.
     pub fn bp(&self) -> usize {
         self.rbp as usize
+    }
+}
+
+impl From<[u64; 27]> for X86_64PtraceGPRegs {
+    fn from(regs: [u64; 27]) -> Self {
+        Self {
+            r15: regs[0],
+            r14: regs[1],
+            r13: regs[2],
+            r12: regs[3],
+            rbp: regs[4],
+            rbx: regs[5],
+            r11: regs[6],
+            r10: regs[7],
+            r9: regs[8],
+            r8: regs[9],
+            rax: regs[10],
+            rcx: regs[11],
+            rdx: regs[12],
+            rsi: regs[13],
+            rdi: regs[14],
+            orig_rax: regs[15],
+            rip: regs[16],
+            cs: regs[17],
+            rflags: regs[18],
+            rsp: regs[19],
+            ss: regs[20],
+            fs_base: regs[21],
+            gs_base: regs[22],
+            ds: regs[23],
+            es: regs[24],
+            fs: regs[25],
+            gs: regs[26],
+        }
+    }
+}
+
+impl From<&X86_64PtraceGPRegs> for [u64; 27] {
+    fn from(regs: &X86_64PtraceGPRegs) -> Self {
+        [
+            regs.r15, regs.r14, regs.r13, regs.r12, regs.rbp, regs.rbx,
+            regs.r11, regs.r10, regs.r9, regs.r8, regs.rax, regs.rcx,
+            regs.rdx, regs.rsi, regs.rdi, regs.orig_rax, regs.rip, regs.cs,
+            regs.rflags, regs.rsp, regs.ss, regs.fs_base, regs.gs_base,
+            regs.ds, regs.es, regs.fs, regs.gs,
+        ]
+    }
+}
+
+// Identity From impl required by the Arch trait bound:
+// `type PTraceGpRegs: for<'a> From<&'a Self::UserContext>;`
+impl From<&X86_64PtraceGPRegs> for X86_64PtraceGPRegs {
+    fn from(regs: &X86_64PtraceGPRegs) -> Self {
+        *regs
     }
 }

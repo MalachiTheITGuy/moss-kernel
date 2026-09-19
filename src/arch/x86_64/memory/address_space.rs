@@ -3,17 +3,25 @@
 //! Manages 4-level page tables (PML4 → PDPT → PD → PT) for the
 //! x86_64 architecture.
 
-use crate::memory::proc_vm::address_space::{self, AddressSpace};
-use alloc::sync::Arc;
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use libkernel::{
-    error::Result,
-    memory::address::{PA, VA},
+    error::{KernelError, MapError, Result},
+    memory::{
+        address::{PA, VA},
+        paging::permissions::PtePermissions,
+        page::PageFrame,
+        proc_vm::address_space::{KernAddressSpace, PageInfo, UserAddressSpace},
+        region::{PhysMemoryRegion, VirtMemoryRegion},
+    },
 };
 
 /// x86_64 virtual address space.
 pub struct X86_64AddressSpace {
     // TODO(#15): Page table root (PML4 physical address).
-    pml4: PA,
+    pub(crate) pml4: PA,
 }
 
 impl X86_64AddressSpace {
@@ -86,5 +94,83 @@ bitflags::bitflags! {
 impl From<MapFlags> for u64 {
     fn from(flags: MapFlags) -> Self {
         flags.bits()
+    }
+}
+
+/// x86_64 top-level page table root (PML4 physical address).
+pub struct X86_64PageTableRoot(pub PA);
+
+/// x86_64 process address space newtype.
+pub struct X86_64ProcessAddressSpace(pub X86_64AddressSpace);
+
+impl UserAddressSpace for X86_64ProcessAddressSpace {
+    fn new() -> Result<Self> {
+        let inner = X86_64AddressSpace::new_user();
+        Ok(Self(inner))
+    }
+
+    fn activate(&self) {
+        self.0.activate();
+    }
+
+    fn deactivate(&self) {
+        // TODO: flush TLB for this address space
+    }
+
+    fn map_page(
+        &mut self,
+        _page: PageFrame,
+        _va: VA,
+        _perms: PtePermissions,
+    ) -> Result<()> {
+        // TODO(#15): Map a physical page frame into this address space.
+        todo!("UserAddressSpace::map_page")
+    }
+
+    fn unmap(&mut self, _va: VA) -> Result<PageFrame> {
+        // TODO(#15): Unmap a virtual address and return the frame.
+        todo!("UserAddressSpace::unmap")
+    }
+
+    fn remap(
+        &mut self,
+        _va: VA,
+        _new_page: PageFrame,
+        _perms: PtePermissions,
+    ) -> Result<PageFrame> {
+        // TODO(#15): Remap a virtual address to a new page frame.
+        todo!("UserAddressSpace::remap")
+    }
+
+    fn protect_range(
+        &mut self,
+        _va_range: VirtMemoryRegion,
+        _perms: PtePermissions,
+    ) -> Result<()> {
+        // TODO(#15): Change permissions on a virtual address range.
+        todo!("UserAddressSpace::protect_range")
+    }
+
+    fn unmap_range(
+        &mut self,
+        _va_range: VirtMemoryRegion,
+    ) -> Result<Vec<PageFrame>> {
+        // TODO(#15): Unmap a range of virtual addresses.
+        todo!("UserAddressSpace::unmap_range")
+    }
+
+    fn translate(&self, _va: VA) -> Option<PageInfo> {
+        // TODO(#15): Translate a virtual address to physical.
+        todo!("UserAddressSpace::translate")
+    }
+
+    fn protect_and_clone_region(
+        &mut self,
+        _region: VirtMemoryRegion,
+        _other: &mut Self,
+        _perms: PtePermissions,
+    ) -> Result<()> {
+        // TODO(#15): Clone a region with new permissions.
+        todo!("UserAddressSpace::protect_and_clone_region")
     }
 }
