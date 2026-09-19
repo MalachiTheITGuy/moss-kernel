@@ -16,19 +16,16 @@ use alloc::{
 };
 use arch::{Arch, ArchImpl};
 use core::panic::PanicInfo;
-use drivers::{fdt_prober::get_fdt, fs::register_fs_drivers};
+#[cfg(target_arch = "aarch64")]
+use drivers::fdt_prober::get_fdt;
+use drivers::fs::register_fs_drivers;
 use fs::VFS;
 use getargs::{Opt, Options};
 use libkernel::{
     CpuOps,
     fs::{
-        BlockDevice, OpenFlags, attr::FilePermissions, blk::ramdisk::RamdiskBlkDev, path::Path,
+        BlockDevice, OpenFlags, attr::FilePermissions, path::Path,
         pathbuf::PathBuf,
-    },
-    memory::{
-        address::{PA, VA},
-        proc_vm::address_space::VirtualMemory,
-        region::PhysMemoryRegion,
     },
 };
 use log::{error, warn};
@@ -81,33 +78,37 @@ async fn launch_init(mut ctx: ProcessCtx, mut opts: KOptions) {
         .init
         .unwrap_or_else(|| panic!("No init specified in kernel command line"));
 
-    let dt = get_fdt();
+    #[cfg(target_arch = "aarch64")]
+    let initrd_block_dev: Option<Box<dyn BlockDevice>> = {
+        let dt = get_fdt();
 
-    let initrd_block_dev: Option<Box<dyn BlockDevice>> = if let Some(chosen) =
-        dt.find_nodes("/chosen").next()
-        && let Some(start_addr) = chosen
-            .find_property("linux,initrd-start")
-            .map(|prop| prop.u64())
-        && let Some(end_addr) = chosen
-            .find_property("linux,initrd-end")
-            .map(|prop| prop.u64())
-    {
-        let region = PhysMemoryRegion::from_start_end_address(
-            PA::from_value(start_addr as _),
-            PA::from_value(end_addr as _),
-        );
+        if let Some(chosen) = dt.find_nodes("/chosen").next()
+            && let Some(start_addr) = chosen
+                .find_property("linux,initrd-start")
+                .map(|prop| prop.u64())
+            && let Some(end_addr) = chosen
+                .find_property("linux,initrd-end")
+                .map(|prop| prop.u64())
+        {
+            let region = PhysMemoryRegion::from_start_end_address(
+                PA::from_value(start_addr as _),
+                PA::from_value(end_addr as _),
+            );
 
-        Some(Box::new(
-            RamdiskBlkDev::new(
-                region,
-                VA::from_value(0xffff_9800_0000_0000),
-                &mut *ArchImpl::kern_address_space().lock_save_irq(),
-            )
-            .unwrap(),
-        ))
-    } else {
-        None
+            Some(Box::new(
+                RamdiskBlkDev::new(
+                    region,
+                    VA::from_value(0xffff_9800_0000_0000),
+                    &mut *ArchImpl::kern_address_space().lock_save_irq(),
+                )
+                .unwrap(),
+            ))
+        } else {
+            None
+        }
     };
+    #[cfg(target_arch = "x86_64")]
+    let initrd_block_dev: Option<Box<dyn BlockDevice>> = None;
 
     // Set time to rtc time if possible
     if let Some(rtc) = drivers::rtc::get_rtc()
