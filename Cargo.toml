@@ -1,13 +1,75 @@
-[package]
-name = "moss-kernel"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-acpi = "4.1.1"
+[workspace]
+members = ["libkernel", "moss-macros", "usertest"]
 
 [profile.dev]
 panic = "abort"
 
+[workspace.dependencies]
+async-trait = "0.1.89"
+bitflags = "2.11"
+log = "0.4"
+paste = "1.0.15"
+rand = { version = "0.10", default-features = false }
+
+[workspace.lints.clippy]
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+
+[package]
+name = "moss"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "moss"
+test = true
+bench = false
+
+[dependencies]
+libkernel = { path = "libkernel", features = ["all"] }
+moss-macros = { path = "moss-macros" }
+
+
+async-trait = { workspace = true }
+bitflags = { workspace = true }
+blake2 = { version = "0.10.6", default-features = false }
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
+futures = { version = "0.3.31", default-features = false, features = ["alloc", "async-await"] }
+getargs = { version = "0.5.0", default-features = false }
+log = { workspace = true }
+object = { version = "0.39.0", default-features = false, features = ["core", "elf", "read_core"] }
+paste = { workspace = true }
+ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
+rand = { workspace = true }
+rustc-hash = { version = "2.1", default-features = false }
+smoltcp = { version = "0.13.0", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp"] }
+tock-registers = "0.10.1"
+virtio-drivers = "0.13.0"
+atomic_enum = "0.3.0"
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11.1.0"
+arm-pl011-uart = { version = "0.5.0", default-features = false }
+arm_pl031 = { version = "0.2.1", default-features = false }
+fdt-parser = "0.4.16"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.15"
+acpi = "6.1"
+
+[build-dependencies]
+time = { version = "0.3.47", features = ["formatting", "macros"] } # For build timestamping via build.rs
+
+[features]
+default = ["smp"]
+# Support for Symmetric Multiprocessing
+smp = []
+
 [profile.release]
-panic = "abort"
+debug = "full"
+opt-level = 3
+codegen-units = 1
+
+[lints]
+workspace = true
