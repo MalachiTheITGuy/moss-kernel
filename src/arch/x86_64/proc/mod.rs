@@ -1,7 +1,7 @@
 //! x86_64 process management.
 
-use alloc::sync::Arc;
 use crate::process::Task;
+use alloc::sync::Arc;
 
 pub mod idle;
 pub mod signal;

@@ -66,26 +66,16 @@ where
 
         // Let's move some data. The let bindings here are the return
         // values from the assembly call.
-        let (status, work_ptr, work_vtable, new_bytes_copied) =
-            do_copy(*bytes_copied);
+        let (status, work_ptr, work_vtable, new_bytes_copied) = do_copy(*bytes_copied);
 
         match status {
-            UAccessResult::Ok => {
-                return Poll::Ready(Ok(new_bytes_copied))
-            }
-            UAccessResult::AbortDenied => {
-                return Poll::Ready(Err(KernelError::Fault))
-            }
+            UAccessResult::Ok => return Poll::Ready(Ok(new_bytes_copied)),
+            UAccessResult::AbortDenied => return Poll::Ready(Err(KernelError::Fault)),
             UAccessResult::AbortDeferred => {
                 *bytes_copied = new_bytes_copied;
-                let ptr: *mut Fut = unsafe {
-                    transmute((
-                        work_ptr as *mut (),
-                        work_vtable as *const (),
-                    ))
-                };
-                *deferred_fault =
-                    Some(unsafe { Box::into_pin(Box::from_raw(ptr)) });
+                let ptr: *mut Fut =
+                    unsafe { transmute((work_ptr as *mut (), work_vtable as *const ())) };
+                *deferred_fault = Some(unsafe { Box::into_pin(Box::from_raw(ptr)) });
             }
         }
     }
@@ -122,11 +112,7 @@ fn do_copy_from_user(
     (UAccessResult::Ok, 0, 0, len)
 }
 
-pub fn try_copy_from_user(
-    src: UA,
-    dst: *const (),
-    len: usize,
-) -> Result<()> {
+pub fn try_copy_from_user(src: UA, dst: *const (), len: usize) -> Result<()> {
     match do_copy_from_user(src, dst, len, 0).0 {
         UAccessResult::Ok => Ok(()),
         UAccessResult::AbortDenied => Err(KernelError::Fault),
@@ -157,24 +143,14 @@ impl X86_64CopyFromUser {
 impl Future for X86_64CopyFromUser {
     type Output = Result<()>;
 
-    fn poll(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         poll_uaccess(
             &mut this.deferred_fault,
             &mut this.bytes_copied,
             cx,
-            |bytes_copied| {
-                do_copy_from_user(
-                    this.src,
-                    this.dst,
-                    this.len,
-                    bytes_copied,
-                )
-            },
+            |bytes_copied| do_copy_from_user(this.src, this.dst, this.len, bytes_copied),
         )
         .map(|x| x.map(|_| ()))
     }
@@ -203,10 +179,7 @@ impl X86_64CopyStrnFromUser {
 impl Future for X86_64CopyStrnFromUser {
     type Output = Result<usize>;
 
-    fn poll(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         poll_uaccess(
@@ -214,23 +187,15 @@ impl Future for X86_64CopyStrnFromUser {
             &mut this.bytes_copied,
             cx,
             |mut bytes_copied| {
-                let bytes_to_copy =
-                    this.len.saturating_sub(bytes_copied);
+                let bytes_to_copy = this.len.saturating_sub(bytes_copied);
                 if bytes_to_copy == 0 {
-                    return (
-                        UAccessResult::Ok,
-                        0,
-                        0,
-                        bytes_copied,
-                    );
+                    return (UAccessResult::Ok, 0, 0, bytes_copied);
                 }
 
                 // Scan for null terminator and copy up to it.
                 let mut count = 0usize;
                 while count < bytes_to_copy {
-                    let ch = unsafe {
-                        *(this.src.value() as *const u8).add(bytes_copied + count)
-                    };
+                    let ch = unsafe { *(this.src.value() as *const u8).add(bytes_copied + count) };
                     let byte = ch;
                     if byte == 0 {
                         break;
@@ -248,12 +213,7 @@ impl Future for X86_64CopyStrnFromUser {
                     *this.dst.add(bytes_copied + count) = 0;
                 }
 
-                (
-                    UAccessResult::Ok,
-                    0,
-                    0,
-                    bytes_copied + count,
-                )
+                (UAccessResult::Ok, 0, 0, bytes_copied + count)
             },
         )
     }
@@ -282,10 +242,7 @@ impl X86_64CopyToUser {
 impl Future for X86_64CopyToUser {
     type Output = Result<()>;
 
-    fn poll(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         poll_uaccess(
@@ -293,15 +250,9 @@ impl Future for X86_64CopyToUser {
             &mut this.bytes_copied,
             cx,
             |bytes_copied| {
-                let bytes_to_copy =
-                    this.len.saturating_sub(bytes_copied);
+                let bytes_to_copy = this.len.saturating_sub(bytes_copied);
                 if bytes_to_copy == 0 {
-                    return (
-                        UAccessResult::Ok,
-                        0,
-                        0,
-                        bytes_copied,
-                    );
+                    return (UAccessResult::Ok, 0, 0, bytes_copied);
                 }
 
                 unsafe {

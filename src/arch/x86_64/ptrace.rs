@@ -144,11 +144,33 @@ impl From<[u64; 27]> for X86_64PtraceGPRegs {
 impl From<&X86_64PtraceGPRegs> for [u64; 27] {
     fn from(regs: &X86_64PtraceGPRegs) -> Self {
         [
-            regs.r15, regs.r14, regs.r13, regs.r12, regs.rbp, regs.rbx,
-            regs.r11, regs.r10, regs.r9, regs.r8, regs.rax, regs.rcx,
-            regs.rdx, regs.rsi, regs.rdi, regs.orig_rax, regs.rip, regs.cs,
-            regs.rflags, regs.rsp, regs.ss, regs.fs_base, regs.gs_base,
-            regs.ds, regs.es, regs.fs, regs.gs,
+            regs.r15,
+            regs.r14,
+            regs.r13,
+            regs.r12,
+            regs.rbp,
+            regs.rbx,
+            regs.r11,
+            regs.r10,
+            regs.r9,
+            regs.r8,
+            regs.rax,
+            regs.rcx,
+            regs.rdx,
+            regs.rsi,
+            regs.rdi,
+            regs.orig_rax,
+            regs.rip,
+            regs.cs,
+            regs.rflags,
+            regs.rsp,
+            regs.ss,
+            regs.fs_base,
+            regs.gs_base,
+            regs.ds,
+            regs.es,
+            regs.fs,
+            regs.gs,
         ]
     }
 }

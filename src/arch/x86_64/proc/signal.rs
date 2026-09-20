@@ -4,13 +4,11 @@
 //! The layout must match the kernel's signal frame so that sigreturn
 //! can restore the interrupted context.
 
-use crate::process::Task;
-use libkernel::error::Result;
-use crate::process::thread_group::signal::{
-    SigId, ksigaction::UserspaceSigAction,
-};
-use crate::sched::syscall_ctx::ProcessCtx;
 use super::super::ptrace::X86_64PtraceGPRegs;
+use crate::process::Task;
+use crate::process::thread_group::signal::{SigId, ksigaction::UserspaceSigAction};
+use crate::sched::syscall_ctx::ProcessCtx;
+use libkernel::error::Result;
 /// x86_64 general-purpose register set saved in the signal frame.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -91,8 +89,6 @@ pub async fn do_signal(
 ///
 /// Always panics with `todo!()` — signal return for x86_64
 /// is not yet implemented.
-pub async fn do_signal_return(
-    _ctx: ProcessCtx,
-) -> Result<X86_64PtraceGPRegs> {
+pub async fn do_signal_return(_ctx: ProcessCtx) -> Result<X86_64PtraceGPRegs> {
     todo!("x86_64 do_signal_return")
 }
