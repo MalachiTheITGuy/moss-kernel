@@ -8,10 +8,10 @@
 
 /// Initialize the x86_64 vDSO.
 ///
-//! # Safety
-//!
-//! Must be called during boot after the kernel image is mapped
-//! into virtual memory.
+/// # Safety
+///
+/// Must be called during boot after the kernel image is mapped
+/// into virtual memory.
 pub unsafe fn init() {
     // TODO(#7): Build the vDSO image and register it for mmap
     // into user processes.

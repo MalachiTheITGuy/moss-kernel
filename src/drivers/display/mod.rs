@@ -16,6 +16,7 @@ use libkernel::fs::OpenFlags;
 use libkernel::fs::attr::FilePermissions;
 use libkernel::memory::address::UA;
 
+#[cfg(target_arch = "aarch64")]
 pub mod virtio;
 
 /// Kernel display abstraction: a framebuffer (RGBA8888) and the

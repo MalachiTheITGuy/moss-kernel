@@ -111,6 +111,7 @@ async fn launch_init(mut ctx: ProcessCtx, mut opts: KOptions) {
     let initrd_block_dev: Option<Box<dyn BlockDevice>> = None;
 
     // Set time to rtc time if possible
+    #[cfg(target_arch = "aarch64")]
     if let Some(rtc) = drivers::rtc::get_rtc()
         && let Some(time) = rtc.time()
     {

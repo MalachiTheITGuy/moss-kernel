@@ -83,11 +83,13 @@ pub async fn sys_clone(
         let mut user_ctx = *current_task.ctx.user();
 
         // TODO: Make this arch independent. The child returns '0' on clone.
-        user_ctx.x[0] = 0;
+        #[cfg(target_arch = "aarch64")]
+        { user_ctx.x[0] = 0; }
 
         if flags.contains(CloneFlags::CLONE_SETTLS) {
             // TODO: Make this arch independent.
-            user_ctx.tpid_el0 = tls as _;
+            #[cfg(target_arch = "aarch64")]
+            { user_ctx.tpid_el0 = tls as _; }
         }
 
         let tg = if flags.contains(CloneFlags::CLONE_THREAD) {
@@ -96,7 +98,9 @@ pub async fn sys_clone(
                 // set.
                 return Err(KernelError::InvalidValue);
             }
-            user_ctx.sp_el0 = newsp.value() as _;
+            // Set up child stack
+            #[cfg(target_arch = "aarch64")]
+            { user_ctx.sp_el0 = newsp.value() as _; }
 
             // A new task within this thread group.
             current_task.process.clone()

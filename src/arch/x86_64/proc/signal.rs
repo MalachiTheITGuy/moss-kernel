@@ -4,9 +4,13 @@
 //! The layout must match the kernel's signal frame so that sigreturn
 //! can restore the interrupted context.
 
-use crate::process::task::{Task, task_struct};
+use crate::process::Task;
 use libkernel::error::Result;
-
+use crate::process::thread_group::signal::{
+    SigId, ksigaction::UserspaceSigAction,
+};
+use crate::sched::syscall_ctx::ProcessCtx;
+use super::super::ptrace::X86_64PtraceGPRegs;
 /// x86_64 general-purpose register set saved in the signal frame.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
@@ -42,9 +46,9 @@ pub struct X86_64GPRegs {
 
 /// x86_64 signal frame.
 ///
-//! The layout must match the x86_64 rt_sigframe ABI:
-//! - rt_sigframe.header (siginfo_t + ucontext pointer)
-//! - rt_sigframe.uc (ucontext with saved registers)
+/// The layout must match the x86_64 rt_sigframe ABI:
+/// - rt_sigframe.header (siginfo_t + ucontext pointer)
+/// - rt_sigframe.uc (ucontext with saved registers)
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct RtSigFrame {
@@ -56,7 +60,7 @@ pub struct RtSigFrame {
 
 /// Initialize the signal frame for signal delivery.
 pub fn setup_sig_frame(
-    task: &mut Task<task_struct>,
+    task: &mut Task,
     signo: usize,
     handler: usize,
     _oldcontext: usize,
@@ -65,4 +69,30 @@ pub fn setup_sig_frame(
     // TODO(#17): Build the rt_sigframe on the task's kernel stack
     // so that sigreturn restores the interrupted context.
     todo!("x86_64 setup_sig_frame")
+}
+
+/// Deliver a signal to a user-space task.
+///
+/// # Panics
+///
+/// Always panics with `todo!()` — signal delivery for x86_64
+/// is not yet implemented.
+pub async fn do_signal(
+    _ctx: ProcessCtx,
+    _sig: SigId,
+    _action: UserspaceSigAction,
+) -> Result<X86_64PtraceGPRegs> {
+    todo!("x86_64 do_signal")
+}
+
+/// Return from a signal handler, restoring the interrupted context.
+///
+/// # Panics
+///
+/// Always panics with `todo!()` — signal return for x86_64
+/// is not yet implemented.
+pub async fn do_signal_return(
+    _ctx: ProcessCtx,
+) -> Result<X86_64PtraceGPRegs> {
+    todo!("x86_64 do_signal_return")
 }

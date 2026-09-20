@@ -12,6 +12,7 @@ use core::{
     time::Duration,
 };
 
+#[cfg(target_arch = "aarch64")]
 pub mod armv8_arch;
 
 const USER_HZ: u64 = 100;

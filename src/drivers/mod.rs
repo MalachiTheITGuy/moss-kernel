@@ -12,6 +12,7 @@ use libkernel::{
     error::{KernelError, Result},
     fs::OpenFlags,
 };
+#[cfg(target_arch = "aarch64")]
 use probe::DeviceDescriptor;
 
 use crate::{
@@ -22,14 +23,17 @@ use crate::{
 
 pub mod chrdev;
 pub mod display;
+#[cfg(target_arch = "aarch64")]
 pub mod fdt_prober;
 pub mod fs;
 pub mod init;
 pub mod interrupts;
 pub mod probe;
 pub mod rng;
+#[cfg(target_arch = "aarch64")]
 pub mod rtc;
 pub mod timer;
+#[cfg(target_arch = "aarch64")]
 pub mod uart;
 mod virtio_hal;
 
