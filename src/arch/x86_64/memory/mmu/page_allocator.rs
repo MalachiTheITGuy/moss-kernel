@@ -1,46 +1,26 @@
-//! x86_64 physical page allocator.
-//!
-//! Manages allocation of 4 KiB physical frames for page tables,
-//! kernel data, and user mappings.
+use core::marker::PhantomData;
 
-use alloc::vec::Vec;
-use libkernel::memory::address::PA;
-use crate::sync::SpinLock;
+use crate::memory::page::ClaimedPage;
+use libkernel::{
+    error::Result,
+    memory::address::TPA,
+    memory::paging::{PageAllocator, PgTable, PgTableArray},
+};
 
-/// A simple free-list physical page allocator for x86_64.
-pub struct PageAllocator {
-    free_frames: Vec<PA>,
+pub struct PageTableAllocator<'a> {
+    data: PhantomData<&'a u8>,
 }
 
-impl PageAllocator {
-    /// Create an empty allocator.
-    pub const fn new() -> Self {
-        Self {
-            free_frames: Vec::new(),
-        }
+impl PageTableAllocator<'_> {
+    pub fn new() -> Self {
+        Self { data: PhantomData }
     }
+}
 
-    /// Register a range of physical memory as available.
-    ///
-    //! # Safety
-    //!
-    //! The caller must ensure that the range is not already in use
-    //! and that no two registrations overlap.
-    pub unsafe fn add_region(&mut self, start: PA, end: PA) {
-        // TODO(#15): Populate free_frames with 4 KiB-aligned frames
-        // from the given physical range.
-        todo!("PageAllocator::add_region")
-    }
+impl PageAllocator for PageTableAllocator<'_> {
+    fn allocate_page_table<T: PgTable>(&mut self) -> Result<TPA<PgTableArray<T>>> {
+        let pg = ClaimedPage::alloc_zeroed()?;
 
-    /// Allocate a single 4 KiB physical frame.
-    pub fn alloc_frame(&mut self) -> Option<PA> {
-        // TODO(#15): Pop a frame from the free list.
-        todo!("PageAllocator::alloc_frame")
-    }
-
-    /// Return a physical frame to the free list.
-    pub fn free_frame(&mut self, frame: PA) {
-        // TODO(#15): Push frame onto the free list.
-        todo!("PageAllocator::free_frame")
+        Ok(pg.leak().pa().cast())
     }
 }

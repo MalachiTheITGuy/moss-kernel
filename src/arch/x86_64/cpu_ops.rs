@@ -48,5 +48,4 @@ impl CpuOps for super::X86_64 {
             unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
         }
     }
-
 }

@@ -1,176 +1,230 @@
-//! x86_64 kernel address space management.
-//!
-//! Manages 4-level page tables (PML4 → PDPT → PD → PT) for the
-//! x86_64 architecture.
+use crate::memory::PAGE_ALLOC;
 
-extern crate alloc;
-
+use super::{
+    mmu::page_allocator::PageTableAllocator, page_mapper::PageOffsetPgTableMapper,
+    tlb::AllTlbInvalidator,
+};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use libkernel::{
+    arch::x86_64::memory::{
+        pg_descriptors::{MemoryType, PTE},
+        pg_tables::{MapAttributes, MappingContext, PML4Table, map_range},
+        pg_tear_down::tear_down_address_space,
+        pg_walk::{get_pte, walk_and_modify_region},
+    },
     error::{KernelError, MapError, Result},
     memory::{
-        address::{PA, VA},
-        paging::permissions::PtePermissions,
+        PAGE_SIZE,
+        address::{TPA, VA},
         page::PageFrame,
-        proc_vm::address_space::{KernAddressSpace, PageInfo, UserAddressSpace},
+        paging::{
+            PaMapper, PageAllocator, PageTableEntry, PgTableArray, permissions::PtePermissions,
+            tear_down::TeardownAction, walk::WalkContext,
+        },
+        proc_vm::address_space::{PageInfo, UserAddressSpace},
         region::{PhysMemoryRegion, VirtMemoryRegion},
     },
 };
+use log::warn;
 
-/// x86_64 virtual address space.
-pub struct X86_64AddressSpace {
-    // TODO(#15): Page table root (PML4 physical address).
-    pub(crate) pml4: PA,
+pub struct X86_64ProcessAddressSpace {
+    pml4_table: TPA<PgTableArray<PML4Table>>,
 }
 
-impl X86_64AddressSpace {
-    /// Create a new kernel address space.
-    pub fn new_kernel() -> Self {
-        // TODO(#15): Allocate and initialize a PML4 page table.
-        todo!("X86_64AddressSpace::new_kernel")
+unsafe impl Send for X86_64ProcessAddressSpace {}
+unsafe impl Sync for X86_64ProcessAddressSpace {}
+
+impl UserAddressSpace for X86_64ProcessAddressSpace {
+    fn new() -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let pml4_table = PageTableAllocator::new().allocate_page_table()?;
+
+        Ok(Self { pml4_table })
     }
 
-    /// Create a new user address space by copying from kernel space.
-    pub fn new_user() -> Self {
-        // TODO(#15): Fork PML4, copying kernel-space entries.
-        todo!("X86_64AddressSpace::new_user")
-    }
+    fn activate(&self) {
+        let _invalidator = AllTlbInvalidator::new();
 
-    /// Map a virtual page to a physical page with given flags.
-    pub fn map(
-        &mut self,
-        va: VA,
-        pa: PA,
-        flags: MapFlags,
-    ) -> Result<()> {
-        // TODO(#15): Walk/create page table entries.
-        todo!("X86_64AddressSpace::map")
-    }
-
-    /// Unmap a virtual page.
-    pub fn unmap(&mut self, va: VA) -> Result<()> {
-        // TODO(#15): Clear page table entry, flush TLB.
-        todo!("X86_64AddressSpace::unmap")
-    }
-
-    /// Translate a virtual address to a physical address.
-    pub fn translate(&self, va: VA) -> Option<PA> {
-        // TODO(#15): Walk page tables.
-        todo!("X86_64AddressSpace::translate")
-    }
-
-    /// Switch to this address space by loading PML4 into CR3.
-    pub fn activate(&self) {
-        // SAFETY: Loading CR3 with a valid PML4 address switches the
-        // active address space. The PML4 is kept alive by Arc.
+        // SAFETY: Loading CR3 with a valid PML4 physical address switches
+        // the active address space. The PML4 is kept alive by the struct.
         unsafe {
             core::arch::asm!(
                 "mov cr3, {pml4}",
-                pml4 = in(reg) self.pml4.value() as u64,
+                pml4 = in(reg) self.pml4_table.value() as u64,
                 options(nostack),
             );
         }
     }
-}
-
-/// Page table entry flags for x86_64.
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct MapFlags: u64 {
-        const PRESENT       = 1 << 0;
-        const WRITABLE      = 1 << 1;
-        const USER_ACCESS   = 1 << 2;
-        const WRITE_THROUGH = 1 << 3;
-        const NO_CACHE      = 1 << 4;
-        const ACCESSED      = 1 << 5;
-        const DIRTY         = 1 << 6;
-        const HUGE_PAGE     = 1 << 7;
-        const GLOBAL        = 1 << 8;
-        const NO_EXECUTE    = 1 << 63;
-    }
-}
-
-impl From<MapFlags> for u64 {
-    fn from(flags: MapFlags) -> Self {
-        flags.bits()
-    }
-}
-
-/// x86_64 top-level page table root (PML4 physical address).
-pub struct X86_64PageTableRoot(pub PA);
-
-/// x86_64 process address space newtype.
-pub struct X86_64ProcessAddressSpace(pub X86_64AddressSpace);
-
-impl UserAddressSpace for X86_64ProcessAddressSpace {
-    fn new() -> Result<Self> {
-        let inner = X86_64AddressSpace::new_user();
-        Ok(Self(inner))
-    }
-
-    fn activate(&self) {
-        self.0.activate();
-    }
 
     fn deactivate(&self) {
-        // TODO: flush TLB for this address space
+        let _invalidator = AllTlbInvalidator::new();
     }
 
-    fn map_page(
-        &mut self,
-        _page: PageFrame,
-        _va: VA,
-        _perms: PtePermissions,
-    ) -> Result<()> {
-        // TODO(#15): Map a physical page frame into this address space.
-        todo!("UserAddressSpace::map_page")
+    fn map_page(&mut self, page: PageFrame, va: VA, perms: PtePermissions) -> Result<()> {
+        let mut ctx = MappingContext {
+            allocator: &mut PageTableAllocator::new(),
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+
+        map_range(
+            self.pml4_table,
+            MapAttributes {
+                phys: page.as_phys_range(),
+                virt: VirtMemoryRegion::new(va, PAGE_SIZE),
+                mem_type: MemoryType::WB,
+                perms,
+            },
+            &mut ctx,
+        )
     }
 
     fn unmap(&mut self, _va: VA) -> Result<PageFrame> {
-        // TODO(#15): Unmap a virtual address and return the frame.
-        todo!("UserAddressSpace::unmap")
+        todo!()
     }
 
-    fn remap(
-        &mut self,
-        _va: VA,
-        _new_page: PageFrame,
-        _perms: PtePermissions,
-    ) -> Result<PageFrame> {
-        // TODO(#15): Remap a virtual address to a new page frame.
-        todo!("UserAddressSpace::remap")
+    fn protect_range(&mut self, va_range: VirtMemoryRegion, perms: PtePermissions) -> Result<()> {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+
+        walk_and_modify_region(self.pml4_table, va_range, &mut walk_ctx, |_, desc| {
+            match (perms.is_execute(), perms.is_read(), perms.is_write()) {
+                (false, false, false) => PTE::invalid(),
+                _ => desc.set_permissions(perms),
+            }
+        })
     }
 
-    fn protect_range(
-        &mut self,
-        _va_range: VirtMemoryRegion,
-        _perms: PtePermissions,
-    ) -> Result<()> {
-        // TODO(#15): Change permissions on a virtual address range.
-        todo!("UserAddressSpace::protect_range")
+    fn unmap_range(&mut self, va_range: VirtMemoryRegion) -> Result<Vec<PageFrame>> {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+        let mut claimed_pages = Vec::new();
+
+        walk_and_modify_region(self.pml4_table, va_range, &mut walk_ctx, |_, desc| {
+            if let Some(addr) = desc.mapped_address() {
+                claimed_pages.push(addr.to_pfn());
+            }
+
+            PTE::invalid()
+        })?;
+
+        Ok(claimed_pages)
     }
 
-    fn unmap_range(
-        &mut self,
-        _va_range: VirtMemoryRegion,
-    ) -> Result<Vec<PageFrame>> {
-        // TODO(#15): Unmap a range of virtual addresses.
-        todo!("UserAddressSpace::unmap_range")
+    fn remap(&mut self, va: VA, new_page: PageFrame, perms: PtePermissions) -> Result<PageFrame> {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+
+        let mut old_pte = None;
+
+        walk_and_modify_region(
+            self.pml4_table,
+            va.page_region(),
+            &mut walk_ctx,
+            |_, pte| {
+                old_pte = Some(pte);
+                PTE::new_map_pa(new_page.pa(), MemoryType::WB, perms)
+            },
+        )?;
+
+        old_pte
+            .and_then(|pte| pte.mapped_address())
+            .map(|a| a.to_pfn())
+            .ok_or(KernelError::MappingError(MapError::NotL3Mapped))
     }
 
-    fn translate(&self, _va: VA) -> Option<PageInfo> {
-        // TODO(#15): Translate a virtual address to physical.
-        todo!("UserAddressSpace::translate")
+    fn translate(&self, va: VA) -> Option<PageInfo> {
+        let pte = get_pte(
+            self.pml4_table,
+            va.page_aligned(),
+            &mut PageOffsetPgTableMapper {},
+        )
+        .unwrap()?;
+
+        Some(PageInfo {
+            pfn: pte.mapped_address()?.to_pfn(),
+            perms: pte.permissions(),
+        })
     }
 
     fn protect_and_clone_region(
         &mut self,
-        _region: VirtMemoryRegion,
-        _other: &mut Self,
-        _perms: PtePermissions,
-    ) -> Result<()> {
-        // TODO(#15): Clone a region with new permissions.
-        todo!("UserAddressSpace::protect_and_clone_region")
+        region: VirtMemoryRegion,
+        other: &mut Self,
+        new_perms: PtePermissions,
+    ) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+
+        walk_and_modify_region(self.pml4_table, region, &mut walk_ctx, |va, pgd| {
+            if let Some(addr) = pgd.mapped_address() {
+                let page_region = PhysMemoryRegion::new(addr, PAGE_SIZE);
+
+                // SAFETY: This is safe since the page will have allocated when
+                // handling faults.
+                let alloc1 = unsafe { PAGE_ALLOC.get().unwrap().alloc_from_region(page_region) };
+
+                // Increase ref count.
+                alloc1.clone().leak();
+                alloc1.leak();
+
+                let mut ctx = MappingContext {
+                    allocator: &mut PageTableAllocator::new(),
+                    mapper: &mut PageOffsetPgTableMapper {},
+                    invalidator: &AllTlbInvalidator::new(),
+                };
+
+                map_range(
+                    other.pml4_table,
+                    MapAttributes {
+                        phys: PhysMemoryRegion::new(addr, PAGE_SIZE),
+                        virt: VirtMemoryRegion::new(va, PAGE_SIZE),
+                        mem_type: MemoryType::WB,
+                        perms: new_perms,
+                    },
+                    &mut ctx,
+                )
+                .unwrap();
+
+                pgd.set_permissions(new_perms)
+            } else {
+                pgd
+            }
+        })
+    }
+}
+
+impl Drop for X86_64ProcessAddressSpace {
+    fn drop(&mut self) {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+
+        if tear_down_address_space(
+            self.pml4_table,
+            &mut walk_ctx,
+            |_| TeardownAction::Free,
+            |region| unsafe {
+                PAGE_ALLOC.get().unwrap().alloc_from_region(region);
+            },
+        )
+        .is_err()
+        {
+            warn!("Address space tear down failed.  Probable memory leakage!");
+        }
     }
 }
