@@ -65,10 +65,10 @@ pub mod numbers {
 
 /// Set up the syscall entry point via the LSTAR MSR.
 ///
-//! # Safety
-//!
-//! Must be called once with interrupts disabled. Modifies the
-//! IA32_LSTAR MSR.
+/// # Safety
+///
+/// Must be called once with interrupts disabled. Modifies the
+/// IA32_LSTAR MSR.
 pub unsafe fn setup_syscall_entry() {
     // TODO(#16):
     // 1. Write the syscall entry trampoline address to IA32_LSTAR MSR.

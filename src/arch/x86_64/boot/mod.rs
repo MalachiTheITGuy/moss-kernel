@@ -9,6 +9,7 @@
 //! 3. `arch_init_stage2` — IDT, interrupt setup → `kmain()`
 
 pub mod gdt;
+pub mod idt;
 
 use alloc::string::String;
 
