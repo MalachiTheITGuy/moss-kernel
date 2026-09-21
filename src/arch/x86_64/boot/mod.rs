@@ -196,9 +196,8 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
 unsafe extern "C" fn arch_init_stage2() {
     log::info!("moss: stage2 — x86_64 early init");
 
-    // TODO(#16): Set up the IDT (Interrupt Descriptor Table).
-    // TODO(#16): Load the GDT with TSS via gdt module.
-    // TODO(#16): Enable interrupts.
+    // Initialize exceptions: IDT + syscall entry (Issue #16).
+    crate::arch::x86_64::exceptions::exceptions_init().expect("exceptions init failed");
 
     // Parse the Multiboot2 command line again for kmain.
     // During Phase 1 we store the info pointer in a static for

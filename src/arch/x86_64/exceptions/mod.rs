@@ -15,7 +15,7 @@
 //! code or dummy zero) then jumps to `interrupt_common`, which saves all
 //! GP registers and calls [`x86_64_interrupt_handler`].
 
-use crate::interrupts::{ClaimedInterrupt, get_interrupt_root};
+use crate::interrupts::{get_interrupt_root, ClaimedInterrupt};
 use core::{arch::global_asm, fmt::Display};
 use libkernel::error::Result;
 
@@ -179,7 +179,11 @@ pub fn exceptions_init() -> Result<()> {
         crate::arch::x86_64::boot::idt::setup_idt();
     }
 
-    log::info!("moss: x86_64 IDT loaded");
+    unsafe {
+        syscall::setup_syscall_entry();
+    }
+
+    log::info!("moss: x86_64 exceptions & syscall entry ready");
 
     Ok(())
 }

@@ -45,5 +45,15 @@ pub const IRQ_BASE: usize = 32;
 /// Number of CPU exception vectors (0–31).
 pub const NUM_EXCEPTION_VECTORS: usize = 32;
 
+/// Software interrupt vector used for SYSCALL entry.
+///
+/// When user space executes `syscall`, the entry trampoline pushes
+/// this vector number so the dispatcher can route it to the syscall
+/// handler.  This is not a hardware-defined vector — it is chosen
+/// by the kernel to avoid collisions with CPU exceptions (0–31) and
+/// hardware IRQs (32–255).  We use 0x80 to mirror the Linux
+/// convention for the legacy `int 0x80` path.
+pub const SYSCALL: usize = 0x80;
+
 /// Total number of IDT entries.
 pub const NUM_IDT_ENTRIES: usize = 256;

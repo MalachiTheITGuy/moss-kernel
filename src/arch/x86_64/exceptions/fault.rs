@@ -89,7 +89,7 @@ unsafe fn read_cr2() -> u64 {
 /// A full implementation will delegate to the memory-management
 /// subsystem to resolve demand faults, copy-on-write, etc.
 pub fn handle_page_fault(state: &ExceptionState) {
-    let cr2 = read_cr2();
+    let cr2 = unsafe { read_cr2() };
     let ec = state.error_code;
     let access = format_pf_error_code(ec);
 
