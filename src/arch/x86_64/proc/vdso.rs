@@ -1,19 +1,58 @@
-//! x86_64 vDSO (Virtual Dynamic Shared Object).
+//! x86_64 Virtual Dynamic Shared Object (VDSO) support.
 //!
-//! The vDSO is a small shared library that the kernel maps into
-//! user address space to allow fast system calls (e.g., clock_gettime)
-//! without trapping into the kernel.
-//!
-//! TODO(#7): Implement the x86_64 vDSO with clock_gettime and gettimeofday.
+//! Provides kernel-side VDSO initialisation so that user-space can
+//! call into the kernel's sigreturn trampoline without a full syscall
+//! transition.  The layout mirrors the arm64 implementation.
 
-/// Initialize the x86_64 vDSO.
+use core::arch::global_asm;
+
+use libkernel::error::Result;
+use libkernel::memory::address::VA;
+use libkernel::memory::paging::permissions::PtePermissions;
+use libkernel::memory::proc_vm::address_space::{KernAddressSpace, VirtualMemory};
+use libkernel::memory::region::{PhysMemoryRegion, VirtMemoryRegion};
+
+use log::info;
+
+use crate::arch::ArchImpl;
+use crate::ksym_pa;
+
+/// Virtual base address of the VDSO page mapped into user space.
 ///
-/// # Safety
+/// Must agree with the address used by the linker script and the
+/// trampoline in `vdso.s`.
+pub const VDSO_BASE: VA = VA::from_value(0xffff_8100_0000_0000);
+
+global_asm!(include_str!("vdso.s"));
+
+unsafe extern "C" {
+    static __vdso_start: u8;
+    static __vdso_end: u8;
+}
+
+/// Initialise the VDSO by mapping the compiled trampoline page into
+/// the kernel address space at `VDSO_BASE`.
 ///
-/// Must be called during boot after the kernel image is mapped
-/// into virtual memory.
-pub unsafe fn init() {
-    // TODO(#7): Build the vDSO image and register it for mmap
-    // into user processes.
-    todo!("x86_64 vDSO init")
+/// This must be called **after** `setup_kern_addr_space()` during
+/// early boot so that the kernel page tables are available.
+pub fn vdso_init() -> Result<()> {
+    let start = ksym_pa!(__vdso_start);
+    let end = ksym_pa!(__vdso_end);
+    let region = PhysMemoryRegion::from_start_end_address(start, end);
+
+    let mappable_region = region.to_mappable_region();
+
+    let mut kspc = ArchImpl::kern_address_space().lock_save_irq();
+
+    let vregion = VirtMemoryRegion::new(VDSO_BASE, mappable_region.region().size());
+
+    kspc.map_normal(mappable_region.region(), vregion, PtePermissions::rx(true))?;
+
+    info!(
+        "vdso: mapped at 0x{:x} (0x{:x} bytes)",
+        vregion.start_address().value(),
+        vregion.size()
+    );
+
+    Ok(())
 }

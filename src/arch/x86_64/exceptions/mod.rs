@@ -15,9 +15,14 @@
 //! code or dummy zero) then jumps to `interrupt_common`, which saves all
 //! GP registers and calls [`x86_64_interrupt_handler`].
 
-use crate::interrupts::{get_interrupt_root, ClaimedInterrupt};
+use crate::{
+    interrupts::{get_interrupt_root, ClaimedInterrupt},
+    sched::{syscall_ctx::ProcessCtx, uspc_ret::dispatch_userspace_task},
+};
 use core::{arch::global_asm, fmt::Display};
-use libkernel::error::Result;
+use libkernel::{error::Result, memory::address::VA};
+
+use super::ptrace::X86_64PtraceGPRegs;
 
 pub mod esr;
 pub mod fault;
@@ -114,8 +119,13 @@ impl Display for ExceptionState {
 ///
 /// - **0–31**: CPU exceptions — forwarded to `fault` handlers or the
 ///   default panic handler.
+/// - **0x80**: System call — dispatched via the syscall handler.
 /// - **32–255**: hardware IRQs — dispatched through the root interrupt
 ///   controller.
+///
+/// When the exception originates from userspace (ring 3), the full
+/// user register state is saved into the current task's context before
+/// handling and restored on return via [`dispatch_userspace_task`].
 ///
 /// # Safety
 ///
@@ -125,11 +135,36 @@ impl Display for ExceptionState {
 unsafe extern "C" fn x86_64_interrupt_handler(state: &mut ExceptionState) {
     let vector = state.vector_num as usize;
 
+    // Determine if we entered from userspace (ring 3) by inspecting
+    // the CS segment selector's Requested Privilege Level.
+    let from_user = (state.cs & 0x3) == 3;
+
+    // If entering from userspace, snapshot the full user register state
+    // into the current task's context so the scheduler can inspect or
+    // modify it (e.g. for signal delivery).
+    if from_user {
+        // SAFETY: Since we've just entered from ring 3, there *cannot*
+        // be another syscall currently running for this task, therefore
+        // exclusive access to `OwnedTask` is guaranteed.
+        let mut ctx = unsafe { ProcessCtx::from_current() };
+        let gp_regs = X86_64PtraceGPRegs::from(&*state);
+        ctx.task_mut()
+            .ctx
+            .save_user_ctx(&gp_regs as *const _);
+    }
+
     match vector {
+        // ── CPU exceptions ──
         vectors::PAGE_FAULT => fault::handle_page_fault(state),
         vectors::GENERAL_PROTECTION_FAULT => fault::handle_gp_fault(state),
         vectors::DOUBLE_FAULT => fault::handle_double_fault(state),
 
+        // ── System call (int 0x80 / syscall instruction) ──
+        vectors::SYSCALL => {
+            syscall::syscall_dispatch(state);
+        }
+
+        // ── Hardware IRQs ──
         vectors::IRQ_BASE..=255 => {
             // Hardware IRQ — delegate to the root interrupt controller.
             match get_interrupt_root() {
@@ -144,6 +179,23 @@ unsafe extern "C" fn x86_64_interrupt_handler(state: &mut ExceptionState) {
         _ => {
             panic!("Unhandled CPU exception.\n{}", state);
         }
+    }
+
+    // If we entered from userspace, restore the (possibly different)
+    // task's user context and return to userspace.
+    if from_user {
+        // Allocate space for the restored user context on the stack.
+        // The scheduler may have switched tasks inside
+        // `dispatch_userspace_task`, so this will be populated with the
+        // next task's register state.
+        let mut gp_regs = X86_64PtraceGPRegs::new(state.rip, state.rsp);
+        dispatch_userspace_task(&mut gp_regs as *mut _);
+
+        // Convert the restored `X86_64PtraceGPRegs` back to an
+        // `ExceptionState` and write it to the stack frame so that the
+        // assembly return (`iretq`) picks up the correct registers.
+        let restored = ExceptionState::from(&gp_regs);
+        *state = restored;
     }
 }
 
