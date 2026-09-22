@@ -15,6 +15,11 @@ use core::{
 #[cfg(target_arch = "aarch64")]
 pub mod armv8_arch;
 
+#[cfg(target_arch = "x86_64")]
+pub mod hpet;
+#[cfg(target_arch = "x86_64")]
+pub mod lapic_timer;
+
 const USER_HZ: u64 = 100;
 
 /// Represents a fixed point in monotonic time.

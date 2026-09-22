@@ -33,7 +33,6 @@ pub mod rng;
 #[cfg(target_arch = "aarch64")]
 pub mod rtc;
 pub mod timer;
-#[cfg(target_arch = "aarch64")]
 pub mod uart;
 mod virtio_hal;
 

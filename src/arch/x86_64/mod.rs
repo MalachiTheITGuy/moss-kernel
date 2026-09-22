@@ -32,6 +32,7 @@ mod cpu_ops;
 mod exceptions;
 mod memory;
 mod proc;
+pub mod portio;
 pub mod ptrace;
 
 pub struct X86_64 {}
