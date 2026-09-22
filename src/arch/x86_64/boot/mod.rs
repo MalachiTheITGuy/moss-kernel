@@ -18,6 +18,10 @@ extern crate alloc;
 use core::arch::{asm, global_asm};
 use core::slice;
 
+use libkernel::memory::address::TPA;
+use super::memory::mmu::setup_kern_addr_space;
+use super::proc::vdso::vdso_init;
+
 // Pull in the Multiboot2 boot assembly.
 global_asm!(include_str!("start.S"));
 
@@ -28,6 +32,10 @@ const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
 /// Number of bytes needed for the kernel boot stack.
 const BOOT_STACK_SIZE: usize = 8 * 1024;
+
+unsafe extern "C" {
+    static __init_pages_start: u8;
+}
 
 /// Kernel boot stack.
 #[unsafe(no_mangle)]
@@ -171,6 +179,10 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
     // TODO(#15): Initialise kernel heap.
     // TODO(#15): Set up initial x86_64 page tables (higher-half canonical mapping).
 
+    // Set up the kernel address space using the page tables built in start.S.
+    setup_kern_addr_space(TPA::from_value(__init_pages_start as usize))
+        .expect("setup_kern_addr_space failed");
+
     log::info!("moss: stage1 complete, switching stack");
 
     // Return the address of the kernel boot stack. The assembly
@@ -215,6 +227,10 @@ unsafe extern "C" fn arch_init_stage2() {
     let args = String::new();
 
     log::info!("moss: entering kmain (arch: x86_64)");
+
+    if let Err(e) = vdso_init() {
+        log::error!("vdso: {}", e);
+    }
 
     // kmain expects (args: String, ctx_frame: *mut UserCtx).
     // Pass empty args and null ctx_frame for the initial boot.

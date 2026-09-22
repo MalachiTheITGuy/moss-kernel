@@ -4,6 +4,7 @@
 //! `PTRACE_GETREGSET` / `PTRACE_SETREGSET`, matching the Linux
 //! `user_regs_struct` for x86_64.
 
+use super::exceptions::ExceptionState;
 use crate::memory::uaccess::UserCopyable;
 
 /// x86_64 general-purpose register set for ptrace.
@@ -172,6 +173,91 @@ impl From<&X86_64PtraceGPRegs> for [u64; 27] {
             regs.fs,
             regs.gs,
         ]
+    }
+}
+
+// ──────────────────────────────────────────────
+//  ExceptionState ↔ GPRegs conversions
+// ──────────────────────────────────────────────
+
+/// Convert a CPU exception frame into the userspace-visible register set.
+///
+/// Copies the 20 common GP, IP, and segment fields directly.
+/// `vector_num` and `error_code` from the exception frame are dropped.
+/// The remaining fields (`orig_rax`, `fs_base`, `gs_base`, `ds`, `es`,
+/// `fs`, `gs`) are zeroed; they are not saved by the assembly entry
+/// stubs and will be populated on a per-use basis (e.g. `orig_rax` is
+/// set by the syscall entry path).
+impl From<&ExceptionState> for X86_64PtraceGPRegs {
+    fn from(state: &ExceptionState) -> Self {
+        Self {
+            // Common GP registers
+            r15: state.r15,
+            r14: state.r14,
+            r13: state.r13,
+            r12: state.r12,
+            rbp: state.rbp,
+            rbx: state.rbx,
+            r11: state.r11,
+            r10: state.r10,
+            r9: state.r9,
+            r8: state.r8,
+            rax: state.rax,
+            rcx: state.rcx,
+            rdx: state.rdx,
+            rsi: state.rsi,
+            rdi: state.rdi,
+            // Control registers
+            rip: state.rip,
+            cs: state.cs,
+            rflags: state.rflags,
+            rsp: state.rsp,
+            ss: state.ss,
+            // Fields not present in ExceptionState — zeroed.
+            orig_rax: 0,
+            fs_base: 0,
+            gs_base: 0,
+            ds: 0,
+            es: 0,
+            fs: 0,
+            gs: 0,
+        }
+    }
+}
+
+/// Convert a userspace register set back into a CPU exception frame.
+///
+/// Restores the 20 common fields from the GPRegs.  `vector_num` and
+/// `error_code` are set to zero; the caller must fix them up before
+/// returning to userspace (or they are irrelevant for `sysretq`).
+/// The extra GPRegs-only fields (`orig_rax`, `fs_base`, `gs_base`,
+/// `ds`, `es`, `fs`, `gs`) are silently dropped.
+impl From<&X86_64PtraceGPRegs> for ExceptionState {
+    fn from(regs: &X86_64PtraceGPRegs) -> Self {
+        Self {
+            r15: regs.r15,
+            r14: regs.r14,
+            r13: regs.r13,
+            r12: regs.r12,
+            rbp: regs.rbp,
+            rbx: regs.rbx,
+            r11: regs.r11,
+            r10: regs.r10,
+            r9: regs.r9,
+            r8: regs.r8,
+            rax: regs.rax,
+            rcx: regs.rcx,
+            rdx: regs.rdx,
+            rsi: regs.rsi,
+            rdi: regs.rdi,
+            vector_num: 0,
+            error_code: 0,
+            rip: regs.rip,
+            cs: regs.cs,
+            rflags: regs.rflags,
+            rsp: regs.rsp,
+            ss: regs.ss,
+        }
     }
 }
 
