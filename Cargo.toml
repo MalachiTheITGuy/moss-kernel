@@ -54,11 +54,8 @@ arm-pl011-uart = { version = "0.5.0", default-features = false }
 arm_pl031 = { version = "0.2.1", default-features = false }
 fdt-parser = "0.4.16"
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-x86_64 = "0.15"
-acpi = "6.1"
-
 [build-dependencies]
+cc = "1"
 time = { version = "0.3.47", features = ["formatting", "macros"] } # For build timestamping via build.rs
 
 [features]

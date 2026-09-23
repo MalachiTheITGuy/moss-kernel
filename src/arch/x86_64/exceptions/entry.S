@@ -29,10 +29,12 @@
  * can reference them as 64-bit addresses.
  */
 
+.altmacro
 .section .text, "ax", @progbits
 
 /* =================================================================
- * Macros for entry stubs
+ * Macros for entry stubs — uses \num text substitution for macro
+ * arguments, and %expr arithmetic in .irp/.rept contexts.
  * ================================================================= */
 
 /*
@@ -103,7 +105,7 @@ ISR_NOERR 31
 
 .set vec, 32
 .rept 224
-    ISR_NOERR vec
+    ISR_NOERR %vec
     .set vec, vec + 1
 .endr
 
