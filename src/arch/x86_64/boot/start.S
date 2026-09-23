@@ -187,7 +187,14 @@ _start:
     orl     $(1 << 31), %eax
     movl    %eax, %cr0
 
-    /* ---- 5. Far jump to 64-bit code segment ----
+    /* ---- 5. Load GDT (identity-mapped via .text.boot) ----
+     * The GDT lives in .text.boot at physical address 0x100000+N,
+     * which is identity-mapped.  We must load it BEFORE the far
+     * jump because SEL_CODE64 (0x08) must resolve through a valid
+     * GDT. */
+    lgdt    boot_gdt_desc
+
+    /* ---- 6. Far jump to 64-bit code segment ----
      * Loads CS with SEL_CODE64 (a 64-bit code descriptor) and
      * transfers to long_mode_start.  The CPU enters full 64-bit
      * mode. */
@@ -227,27 +234,24 @@ long_mode_start:
     /* ---- 9. Call arch_init_stage2() ---- */
     call    arch_init_stage2
 
-    /* Should never return.  Halt if it does. */
-.Lhang:
-    cli
-    hlt
-    jmp     .Lhang
-
-/* =================================================================
- * .data — GDT and friends (initialized data, loaded from ELF)
- * ================================================================= */
-.section .data, "aw", @progbits
-.align 4
+    /* ---- GDT (in .text.boot so it is at a physical address) ---- */
+    .align 4
 boot_gdt:
     .quad   0x0000000000000000       /* 0x00: null descriptor          */
     .quad   0x00AF9A000000FFFF       /* 0x08: 64-bit code (L=1,D=0)   */
     .quad   0x00CF92000000FFFF       /* 0x10: 64-bit data              */
 boot_gdt_end:
 
-.align 4
+    .align 4
 boot_gdt_desc:
     .word   boot_gdt_end - boot_gdt - 1   /* limit (size − 1)         */
     .long   boot_gdt                       /* base address             */
+
+    /* Should never return.  Halt if it does. */
+.Lhang:
+    cli
+    hlt
+    jmp     .Lhang
 
 /* =================================================================
  * .bss — uninitialized storage
