@@ -21,7 +21,11 @@ use core::slice;
 use super::memory::heap::{KernelHeap, SLAB_ALLOC};
 use super::memory::mmu::setup_kern_addr_space;
 use super::proc::vdso::vdso_init;
-use crate::memory::{FrameAllocator, INITAL_ALLOCATOR, PAGE_ALLOC};
+use crate::{
+    arch::{ArchImpl, CpuOps},
+    drivers::init::run_initcalls,
+    memory::{FrameAllocator, INITAL_ALLOCATOR, PAGE_ALLOC},
+};
 use libkernel::error::Result;
 use libkernel::memory::address::{PA, TPA};
 use libkernel::memory::allocators::slab::allocator::SlabAllocator;
@@ -356,6 +360,20 @@ unsafe extern "C" fn arch_init_stage2() {
 
     // Initialize exceptions: IDT + syscall entry (Issue #16).
     crate::arch::x86_64::exceptions::exceptions_init().expect("exceptions init failed");
+
+    // Enable hardware interrupts so that driver IRQ handlers can fire.
+    // Must happen before run_initcalls() so that interrupt-driven drivers
+    // can claim their IRQs.
+    ArchImpl::enable_interrupts();
+
+    // Run all kernel_driver! init functions (LAPIC, I/O APIC, UART, HPET,
+    // LAPIC timer, etc.).  The LAPIC init must link first so that the
+    // interrupt root is established before drivers that call
+    // `get_interrupt_root()` (e.g. the UART).
+    //
+    // This mirrors the ARM64 arch_init_stage2() flow:
+    //   exceptions_init → enable_interrupts → run_initcalls → kmain
+    unsafe { run_initcalls() };
 
     // Parse the Multiboot2 command line again for kmain.
     // During Phase 1 we store the info pointer in a static for
