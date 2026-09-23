@@ -3,12 +3,10 @@ use crate::{
     sync::{OnceLock, SpinLock},
 };
 use libkernel::memory::{
-    allocators::{
-        phys::FrameAllocator,
-        smalloc::{RegionList, Smalloc},
-    },
+    allocators::smalloc::{RegionList, Smalloc},
     region::PhysMemoryRegion,
 };
+pub use libkernel::memory::allocators::phys::FrameAllocator;
 
 pub mod brk;
 pub mod fault;
