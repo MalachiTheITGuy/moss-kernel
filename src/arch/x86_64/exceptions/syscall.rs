@@ -123,7 +123,7 @@ pub unsafe fn setup_syscall_entry() {
     // SAFETY: Called once with interrupts disabled during boot.
     unsafe {
         // 1. Write the SYSCALL entry point address.
-        write_msr(MSR_LSTAR, syscall_entry as u64);
+        write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
 
         // 2. Program segment selectors for ring 0 ↔ ring 3 transitions.
         write_msr(MSR_STAR, star_msr_value());
@@ -140,7 +140,7 @@ pub unsafe fn setup_syscall_entry() {
 
     info!(
         "syscall entry: LSTAR = {:#x}, STAR = {:#x}, FMASK = {:#x}",
-        syscall_entry as u64,
+        syscall_entry as *const () as u64,
         star_msr_value(),
         0x200u64,
     );

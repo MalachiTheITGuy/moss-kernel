@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use time::OffsetDateTime;
 use time::macros::format_description;
+use time::OffsetDateTime;
 
 fn main() {
     let linker_script = match std::env::var("CARGO_CFG_TARGET_ARCH") {
@@ -15,6 +15,26 @@ fn main() {
 
     println!("cargo::rerun-if-changed={}", linker_script.display());
     println!("cargo::rustc-link-arg=-T{}", linker_script.display());
+
+    // Compile x86_64 .S assembly files that need C preprocessing.
+    // Uppercase .S files contain #define macros and backslash continuations
+    // that the Rust global_asm! macro cannot handle (causes LLVM crashes).
+    // Using the cc crate preprocesses them via the C compiler first.
+    if std::env::var("CARGO_CFG_TARGET_ARCH")
+        .as_deref()
+        .is_ok_and(|a| a == "x86_64")
+    {
+        cc::Build::new()
+            .file("src/arch/x86_64/boot/start.S")
+            .flag("-fno-pie")
+            .flag("-fno-pic")
+            .compile("start");
+        cc::Build::new()
+            .file("src/arch/x86_64/exceptions/entry.S")
+            .flag("-fno-pie")
+            .flag("-fno-pic")
+            .compile("entry");
+    }
 
     // Set an environment variable with the date and time of the build
     let now = OffsetDateTime::now_utc();

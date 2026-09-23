@@ -31,9 +31,6 @@ use libkernel::memory::address::{PA, TPA};
 use libkernel::memory::allocators::slab::allocator::SlabAllocator;
 use libkernel::memory::region::PhysMemoryRegion;
 
-// Pull in the Multiboot2 boot assembly.
-global_asm!(include_str!("start.S"));
-
 /// Kernel base address in the higher-half virtual address space.
 /// Physical address 0x0 maps to this virtual address via the identity
 /// and higher-half page tables built in `start.S`.

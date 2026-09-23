@@ -29,9 +29,6 @@ pub mod fault;
 mod syscall;
 pub mod vectors;
 
-// Pull in the assembly exception entry / exit stubs.
-global_asm!(include_str!("entry.S"));
-
 // ──────────────────────────────────────────────
 //  ExceptionState — register frame
 // ──────────────────────────────────────────────
