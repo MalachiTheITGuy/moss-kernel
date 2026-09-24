@@ -110,12 +110,24 @@ ISR_NOERR 31
 .endr
 
 /* =================================================================
- * Global symbol table — generated from the .rept above.
- * We export the base address so Rust can look up individual stubs
- * as `isr_base + vector * size` (all stubs are identical in size
- * for NOERR; ERR stubs are 1 byte shorter, so we export each
- * explicitly).
+ * ISR stub address table — referenced by Rust code (idt.rs).
+ * Each entry is the 64-bit address of the corresponding isr_stub_N
+ * symbol.  The table lives in .rodata.isr_stubs so that the linker
+ * can place it near the stubs themselves.
  * ================================================================= */
+.macro isr_table_entry n
+    .quad isr_stub_\n
+.endm
+
+.section .rodata.isr_stubs, "a", @progbits
+.global isr_stub_table
+.balign 8
+isr_stub_table:
+.set vec, 0
+.rept 256
+    isr_table_entry %vec
+    .set vec, vec + 1
+.endr
 
 /*
  * interrupt_common — save registers, call Rust handler, restore.

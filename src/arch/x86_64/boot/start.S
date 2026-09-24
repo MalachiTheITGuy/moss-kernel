@@ -70,8 +70,8 @@ _start:
      * Keep it in EBX across the BSS zero (EBX is callee-saved). */
 
     /* ---- 2. Zero BSS ---- */
-    movl    $___bss_start, %edi
-    movl    $___bss_end, %ecx
+    movl    $__bss_start, %edi
+    movl    $__bss_end, %ecx
     subl    %edi, %ecx
     shrl    $2, %ecx                     /* bytes → dwords              */
     xorl    %eax, %eax
@@ -101,7 +101,7 @@ _start:
      * PD within PDPT[0] covers:     index 0 → first 2 MiB of mapping.
      */
 
-    movl    $___init_pages_start, %esi   /* ESI = PML4 base             */
+    movl    $__init_pages_start, %esi   /* ESI = PML4 base             */
 
     /* -- PML4[0] → PDPT_id -- */
     lea     0x1000(%esi), %eax            /* PDPT_id phys addr           */
@@ -142,7 +142,7 @@ _start:
     movl    %eax, 0x4008(%esi)           /* PD_kh entry 1               */
 
     /* -- Fill PT_lo: map phys 0x000000–0x1FFFFF (512 × 4 KiB) -- */
-    movl    $(___init_pages_start + 0x5000), %edi
+    movl    $(__init_pages_start + 0x5000), %edi
     movl    $PTE_RW_P, %eax              /* first PTE: phys 0x0000 | f */
     movl    $512, %ecx
 .Lfill_pt_lo:
@@ -153,7 +153,7 @@ _start:
     jnz     .Lfill_pt_lo
 
     /* -- Fill PT_hi: map phys 0x200000–0x3FFFFF (512 × 4 KiB) -- */
-    movl    $(___init_pages_start + 0x6000), %edi
+    movl    $(__init_pages_start + 0x6000), %edi
     movl    $(0x200000 + PTE_RW_P), %eax /* first PTE: phys 0x200000   */
     movl    $512, %ecx
 .Lfill_pt_hi:
@@ -166,7 +166,7 @@ _start:
     /* ---- 4. Enable PAE + Long Mode + Paging ---- */
 
     /* CR3 = PML4 physical address */
-    movl    $___init_pages_start, %eax
+    movl    $__init_pages_start, %eax
     movl    %eax, %cr3
 
     /* CR4.PAE (bit 5) = 1 */
@@ -217,7 +217,7 @@ long_mode_start:
     /* ---- 7. Set up boot stack ----
      * __boot_stack is at a physical address (linked at PHYS_BASE).
      * Identity mapping is active so the physical address is valid. */
-    movq    $___boot_stack, %rsp
+    movq    $__boot_stack, %rsp
 
     /* Clear frame pointer for clean backtraces */
     xorq    %rbp, %rbp

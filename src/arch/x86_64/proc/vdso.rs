@@ -4,8 +4,6 @@
 //! call into the kernel's sigreturn trampoline without a full syscall
 //! transition.  The layout mirrors the arm64 implementation.
 
-use core::arch::global_asm;
-
 use libkernel::error::Result;
 use libkernel::memory::address::VA;
 use libkernel::memory::paging::permissions::PtePermissions;
@@ -22,8 +20,6 @@ use crate::ksym_pa;
 /// Must agree with the address used by the linker script and the
 /// trampoline in `vdso.s`.
 pub const VDSO_BASE: VA = VA::from_value(0xffff_8100_0000_0000);
-
-global_asm!(include_str!("vdso.s"));
 
 unsafe extern "C" {
     static __vdso_start: u8;

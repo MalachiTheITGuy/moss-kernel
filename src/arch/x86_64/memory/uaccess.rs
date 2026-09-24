@@ -104,7 +104,7 @@ fn do_copy_from_user(
     unsafe {
         core::ptr::copy_nonoverlapping(
             src.value() as *const u8,
-            dst.add(bytes_copied) as *mut u8,
+            (dst as *mut u8).add(bytes_copied),
             bytes_to_copy,
         );
     }
@@ -257,7 +257,7 @@ impl Future for X86_64CopyToUser {
 
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        this.src.add(bytes_copied) as *const u8,
+                        (this.src as *const u8).add(bytes_copied),
                         this.dst.value() as *mut u8,
                         bytes_to_copy,
                     );

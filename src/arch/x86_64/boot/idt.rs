@@ -263,43 +263,14 @@ pub unsafe fn load_idt() {
 // defined in `entry.S` and pushes a vector number (and error code
 // or dummy zero) before jumping to `interrupt_common`.
 //
-// We emit a `.quad` table in `.rodata` so `setup_idt()` can look
-// up each stub address by vector index without 256 individual
-// `extern` declarations.
-
-/// Generate the assembly lookup table of ISR stub addresses.
-macro_rules! build_isr_stub_table {
-    ($( $num:tt ),*) => {
-        core::arch::global_asm!(
-            ".section .rodata.isr_stubs, \"a\", @progbits",
-            ".global isr_stub_table",
-            ".balign 8",
-            "isr_stub_table:",
-            $(concat!(".quad isr_stub_", stringify!($num)),)*
-        );
-    };
-}
-
-build_isr_stub_table!(
-     0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,  14,  15,
-    16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,  30,  31,
-    32,  33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,  45,  46,  47,
-    48,  49,  50,  51,  52,  53,  54,  55,  56,  57,  58,  59,  60,  61,  62,  63,
-    64,  65,  66,  67,  68,  69,  70,  71,  72,  73,  74,  75,  76,  77,  78,  79,
-    80,  81,  82,  83,  84,  85,  86,  87,  88,  89,  90,  91,  92,  93,  94,  95,
-    96,  97,  98,  99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
-   112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127,
-   128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
-   144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
-   160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175,
-   176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
-   192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207,
-   208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
-   224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239,
-   240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255
-);
+// The lookup table (`isr_stub_table`) is generated in `entry.S`
+// via the `cc` crate so that LLVM never has to process 256
+// individual `.quad` directives through `global_asm!`.
 
 /// Table of ISR stub virtual addresses, indexed by vector number.
+///
+/// Defined in `entry.S` in the `.rodata.isr_stubs` section.
+/// Each entry is the 64-bit virtual address of `isr_stub_N`.
 unsafe extern "C" {
     #[link_name = "isr_stub_table"]
     static ISR_STUB_TABLE: [u64; 256];
@@ -308,8 +279,9 @@ unsafe extern "C" {
 /// Return the virtual address of the ISR stub for vector `n`.
 fn isr_stub_addr(n: usize) -> u64 {
     assert!(n < IDT_ENTRIES, "ISR vector out of range: {n}");
-    // SAFETY: `ISR_STUB_TABLE` is an array of 256 `.quad` entries
-    // emitted by `build_isr_stub_table!` in the same translation unit.
+    // SAFETY: `ISR_STUB_TABLE` is defined in `entry.S` with 256
+    // `.quad` entries, one per ISR stub.  The linker resolves the
+    // symbol to the correct virtual address at link time.
     unsafe { ISR_STUB_TABLE[n] }
 }
 

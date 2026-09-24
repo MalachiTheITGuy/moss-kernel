@@ -66,6 +66,10 @@ SECTIONS
     .text : ALIGN(4096) { *(.text .text.*) }
     __text_end = .;
 
+    __vdso_start = .;
+    .vdso : ALIGN(4096) { *(.vdso) }
+    __vdso_end = .;
+
     __rodata_start = .;
     .rodata : ALIGN(4096) {
         *(.rodata .rodata.*)
@@ -113,6 +117,17 @@ SECTIONS
     __boot_stack_top = .;
     . += 32768;                 /* 32 KiB */
     __boot_stack = .;
+
+    /*
+     * Idle thread code pages.  The idle entry points (__idle_start,
+     * __idle_end) are defined in idle.s and referenced by idle.rs
+     * and vmarea.rs.
+     */
+    .idle : ALIGN(4096) {
+        __idle_start = .;
+        *(.idle)
+        __idle_end = .;
+    }
 
     __image_end = .;
 }
