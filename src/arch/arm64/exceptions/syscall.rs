@@ -557,8 +557,8 @@ pub async fn handle_syscall(mut ctx: ProcessCtx) {
             )
             .await
         }
-        0x7a => sys_sched_setaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)).await,
-        0x7b => sys_sched_getaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)).await,
+        0x7a => sys_sched_setaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)),
+        0x7b => sys_sched_getaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)),
         0x7c => sys_sched_yield(),
         0x81 => sys_kill(&ctx, arg1 as _, arg2.into()),
         0x82 => sys_tkill(&ctx, arg1 as _, arg2.into()),

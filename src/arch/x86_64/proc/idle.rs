@@ -10,7 +10,6 @@ use crate::{
     memory::{page::ClaimedPage, PageOffsetTranslator},
     process::owned::OwnedTask,
 };
-use core::arch::global_asm;
 use libkernel::memory::{
     address::VA,
     paging::permissions::PtePermissions,
@@ -32,8 +31,6 @@ const RFLAGS_IF: u64 = 0x200;
 
 /// Fixed virtual address for the idle code page.
 const IDLE_CODE_VA: u64 = 0xd00d_0000;
-
-global_asm!(include_str!("idle.s"));
 
 /// Enter the idle loop on x86_64.
 ///

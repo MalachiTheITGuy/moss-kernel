@@ -3,6 +3,7 @@ members = ["libkernel", "moss-macros", "usertest"]
 
 [profile.dev]
 panic = "abort"
+opt-level = 1
 
 [workspace.dependencies]
 async-trait = "0.1.89"
