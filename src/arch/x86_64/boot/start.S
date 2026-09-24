@@ -21,6 +21,7 @@
 
 /* ---- Multiboot2 constants ---- */
 #define MB2_MAGIC    0xe85250d6
+#define MB2_REG_MAGIC 0x36d76289
 #define MB2_ARCH_i386 0
 
 /* ---- Page-table entry flags ---- */
@@ -42,7 +43,30 @@
 .section .text.boot._start, "ax", @progbits
 .code32
 
+/* ---------- PVH ELF note for QEMU x86_64 boot (XEN_ELFNOTE_PV_INFO) ----------
+ *
+ * QEMU's x86_64 -kernel flag does not support Multiboot2 directly.
+ * It requires a PVH (Paravirtualized Hardware Virtualization) ELF
+ * note of type 0x12 with name "Xen" so it knows the entry point.
+ * The _start address must match the vaddr field below.
+ * ------------------------------------------------------------------ */
+.section .note.Xen, "", @note
+.align 4
+    .long   4                                   /* namesz: "Xen\0"             */
+    .long   24                                  /* descsz: pv_info struct      */
+    .long   0x12                                /* type: XEN_ELFNOTE_PV_INFO  */
+    .asciz  "Xen"                               /* name                        */
+    .align 4
+    /* Xen PVH info struct (version 2) */
+    .long   2                                   /* version = 2                 */
+    .long   0                                   /* flags = 0                   */
+    .quad   _start                              /* vaddr: entry point          */
+    .quad   0                                   /* paddr: 0 (unused)           */
+    .quad   0                                   /* raddr: 0 (unused)           */
+    .long   0                                   /* mem_size: 0 (let QEMU -m)   */
+
 /* ---------- Multiboot2 header (must be 8-byte aligned) ---------- */
+.section .text.boot._start, "ax", @progbits
 .align 8
 mb2_header:
     .long   MB2_MAGIC                          /* magic                      */
@@ -62,8 +86,25 @@ mb2_header_end:
 .globl _start
 .type _start, @function
 _start:
+    /* ---- 0. Early diagnostic: write 'S' to QEMU debug port (0xe9) ---- */
+    pushl   %eax                /* save Multiboot2 register magic        */
+    movb    $0x53, %al          /* 'S' = start */
+    movw    $0xe9, %dx
+    outb    %al, %dx
+
+    /* Also write to COM1 (0x3F8) for serial output */
+    movw    $0x3F8+5, %dx       /* LSR */
+.Lwait_uart1:
+    inb     %dx, %al
+    testb   $0x20, %al          /* THR empty? */
+    jz      .Lwait_uart1
+    movb    $0x53, %al          /* 'S' = start */
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    popl    %eax                /* restore Multiboot2 register magic */
+
     /* ---- 1. Validate Multiboot2 magic ---- */
-    cmpl    $MB2_MAGIC, %eax
+    cmpl    $MB2_REG_MAGIC, %eax
     jne     .Lhang
 
     /* EBX = Multiboot2 info pointer (physical address).
@@ -86,19 +127,19 @@ _start:
      * Layout at __init_pages_start:
      *   +0x0000  PML4       (4 KiB)
      *   +0x1000  PDPT_id    (4 KiB) — identity-map PDPT
-     *   +0x2000  PDPT_kh    (4 KiB) — higher-half PDPT
-     *   +0x3000  PD_id      (4 KiB) — identity-map PD
-     *   +0x4000  PD_kh      (4 KiB) — higher-half PD
-     *   +0x5000  PT_lo      (4 KiB) — maps phys 0x00000–0x1FFFFF
-     *   +0x6000  PT_hi      (4 KiB) — maps phys 0x200000–0x3FFFFF
+     *   +0x2000  PDPT_kh    (4 KiB) — higher-half PDPT (entry 510)
+     *   +0x3000  PD_id      (4 KiB) — identity-map PD (2 MiB large pages)
+     *   +0x4000  PD_kh      (4 KiB) — higher-half PD (2 MiB large pages)
      *
-     * PML4[0]   → PDPT_id → PD_id → PT_lo, PT_hi  (identity)
-     * PML4[511] → PDPT_kh → PD_kh → PT_lo, PT_hi  (higher-half)
+     * Uses 2 MiB large pages (PSE) so no separate page tables are needed.
+     * Each PD entry with PS bit set maps a 2 MiB aligned physical range.
      *
-     * PT_lo / PT_hi are shared between both mappings.
-     * PML4 covers: 0xFFFFFFFF80000000 at index 511, bits 47:39.
-     * PDPT within PML4[511] covers: index 0 → 0xFFFFFFFF80000000.
-     * PD within PDPT[0] covers:     index 0 → first 2 MiB of mapping.
+     * PML4[0]   → PDPT_id → PD_id  (identity: phys 0x000000–0x1FFFFFF)
+     * PML4[511] → PDPT_kh → PD_kh  (higher-half: phys 0x000000–0x1FFFFFF)
+     *
+     * Higher-half virtual 0xFFFFFFFF80000000 = PML4[511], PDPT[510], PD[0]
+     * We map 16 PD entries × 2 MiB = 32 MiB, covering the entire kernel
+     * image, init pages, and boot stack.
      */
 
     movl    $__init_pages_start, %esi   /* ESI = PML4 base             */
@@ -118,50 +159,53 @@ _start:
     orl     $PTE_RW_P, %eax
     movl    %eax, 0x1000(%esi)           /* PDPT_id entry 0             */
 
-    /* -- PDPT_kh[0] → PD_kh -- */
+    /* -- PDPT_kh[510] → PD_kh --
+     *
+     * Virtual address 0xFFFFFFFF80000000 decodes to:
+     *   PML4[511], PDPT[510], PD[0], PT[0]
+     *
+     * So the PDPT entry index must be 510 (byte offset 510*8 = 0xFF0
+     * within the PDPT page at offset 0x2000).
+     */
     lea     0x4000(%esi), %eax
     orl     $PTE_RW_P, %eax
-    movl    %eax, 0x2000(%esi)           /* PDPT_kh entry 0             */
+    movl    %eax, 0x2FF0(%esi)           /* PDPT_kh entry 510 (0x2000+0xFF0) */
 
-    /* -- PD_id[0] → PT_lo,  PD_id[1] → PT_hi -- */
-    lea     0x5000(%esi), %eax            /* PT_lo                       */
-    orl     $PTE_RW_P, %eax
-    movl    %eax, 0x3000(%esi)           /* PD_id entry 0               */
+    /*
+     * Fill PD_id and PD_kh with 2 MiB large-page (PSE) entries.
+     * Each entry maps a 2 MiB physical range directly — no page tables.
+     * The PS bit (1 << 7) marks a large page.  We map 16 entries = 32 MiB,
+     * which covers the kernel image, init pages, and boot stack.
+     *
+     * PTE_RW_P = 0x03 (Present + Writable).  OR in 0x80 for PS.
+     */
+    movl    $(0x03 | 0x80), %ecx        /* ECX = PSE_LARGE_PTE          */
 
-    lea     0x6000(%esi), %eax            /* PT_hi                       */
-    orl     $PTE_RW_P, %eax
-    movl    %eax, 0x3008(%esi)           /* PD_id entry 1               */
+    /* -- PD_id: identity map phys 0x000000–0x1FFFFFF -- */
+    movl    $(__init_pages_start + 0x3000), %edi
+    movl    $0x00000000, %eax            /* first 2 MiB base             */
+    movl    $16, %edx                    /* 16 entries = 32 MiB          */
+.Lfill_pd_id:
+    movl    %eax, %ebx
+    orl     %ecx, %ebx                  /* PSE_LARGE_PTE                */
+    movl    %ebx, (%edi)
+    addl    $0x200000, %eax             /* next 2 MiB base              */
+    addl    $8, %edi                     /* next PDE slot                */
+    decl    %edx
+    jnz     .Lfill_pd_id
 
-    /* -- PD_kh[0] → PT_lo,  PD_kh[1] → PT_hi -- */
-    lea     0x5000(%esi), %eax
-    orl     $PTE_RW_P, %eax
-    movl    %eax, 0x4000(%esi)           /* PD_kh entry 0               */
-
-    lea     0x6000(%esi), %eax
-    orl     $PTE_RW_P, %eax
-    movl    %eax, 0x4008(%esi)           /* PD_kh entry 1               */
-
-    /* -- Fill PT_lo: map phys 0x000000–0x1FFFFF (512 × 4 KiB) -- */
-    movl    $(__init_pages_start + 0x5000), %edi
-    movl    $PTE_RW_P, %eax              /* first PTE: phys 0x0000 | f */
-    movl    $512, %ecx
-.Lfill_pt_lo:
-    movl    %eax, (%edi)
-    addl    $0x1000, %eax                /* next physical page           */
-    addl    $8, %edi                     /* next PTE slot                */
-    decl    %ecx
-    jnz     .Lfill_pt_lo
-
-    /* -- Fill PT_hi: map phys 0x200000–0x3FFFFF (512 × 4 KiB) -- */
-    movl    $(__init_pages_start + 0x6000), %edi
-    movl    $(0x200000 + PTE_RW_P), %eax /* first PTE: phys 0x200000   */
-    movl    $512, %ecx
-.Lfill_pt_hi:
-    movl    %eax, (%edi)
-    addl    $0x1000, %eax
+    /* -- PD_kh: higher-half map phys 0x000000–0x1FFFFFF -- */
+    movl    $(__init_pages_start + 0x4000), %edi
+    movl    $0x00000000, %eax
+    movl    $16, %edx
+.Lfill_pd_kh:
+    movl    %eax, %ebx
+    orl     %ecx, %ebx
+    movl    %ebx, (%edi)
+    addl    $0x200000, %eax
     addl    $8, %edi
-    decl    %ecx
-    jnz     .Lfill_pt_hi
+    decl    %edx
+    jnz     .Lfill_pd_kh
 
     /* ---- 4. Enable PAE + Long Mode + Paging ---- */
 
@@ -214,6 +258,20 @@ long_mode_start:
     movw    %ax, %gs
     movw    %ax, %ss
 
+    /* ---- 6b. Early diagnostic: write 'L' to debug port ---- */
+    movb    $0x4C, %al          /* 'L' = long mode */
+    movw    $0xe9, %dx
+    outb    %al, %dx
+    /* Also write to COM1 */
+    movw    $0x3F8+5, %dx
+.Lwait_uart_long:
+    inb     %dx, %al
+    testb   $0x20, %al
+    jz      .Lwait_uart_long
+    movb    $0x4C, %al          /* 'L' = long mode */
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+
     /* ---- 7. Set up boot stack ----
      * __boot_stack is at a physical address (linked at PHYS_BASE).
      * Identity mapping is active so the physical address is valid. */
@@ -225,6 +283,21 @@ long_mode_start:
     /* ---- 8. Call arch_init_stage1(mboot_info_ptr) ----
      * System V AMD64 ABI: first argument in RDI.
      * Returns: new stack pointer in RAX. */
+
+    /* Early diagnostic: write 'C' to debug port (before calling Rust) */
+    movb    $0x43, %al          /* 'C' = calling stage1 */
+    movw    $0xe9, %dx
+    outb    %al, %dx
+    /* Also write to COM1 */
+    movw    $0x3F8+5, %dx
+.Lwait_uart_call:
+    inb     %dx, %al
+    testb   $0x20, %al
+    jz      .Lwait_uart_call
+    movb    $0x43, %al          /* 'C' = calling stage1 */
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+
     movq    (mboot_info_ptr), %rdi
     call    arch_init_stage1
 

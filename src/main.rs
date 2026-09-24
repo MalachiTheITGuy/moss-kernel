@@ -52,12 +52,69 @@ mod sync;
 #[cfg(test)]
 pub mod testing;
 
+/// Minimal COM1 writer for early-boot panic output.
+/// Writes directly to 16550 UART ports without any dependencies.
+struct EarlyUart {
+    base: u16,
+}
+
+impl EarlyUart {
+    fn new(base: u16) -> Self {
+        Self { base }
+    }
+
+    fn outb(&self, offset: u16, val: u8) {
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") self.base + offset,
+                in("al") val,
+                options(nostack, nomem),
+            );
+        }
+    }
+
+    fn inb(&self, offset: u16) -> u8 {
+        let val: u8;
+        unsafe {
+            core::arch::asm!(
+                "in al, dx",
+                in("dx") self.base + offset,
+                out("al") val,
+                options(nostack, nomem),
+            );
+        }
+        val
+    }
+}
+
+impl core::fmt::Write for EarlyUart {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for byte in s.bytes() {
+            while self.inb(5) & 0x20 == 0 {}
+            self.outb(0, byte);
+        }
+        Ok(())
+    }
+}
+
 #[panic_handler]
 fn on_panic(info: &PanicInfo) -> ! {
     ArchImpl::disable_interrupts();
 
-    let panic_msg = info.message();
+    // Direct COM1 output for early-boot panics (console may be buffered).
+    // Write panic marker byte-by-byte to avoid allocation through format_args!.
+    {
+        let mut uart = EarlyUart::new(0x3F8);
+        const PANIC_MSG: &[u8] = b"\r\n*** PANIC ***\r\n";
+        for &b in PANIC_MSG {
+            while uart.inb(5) & 0x20 == 0 {}
+            uart.outb(0, b);
+        }
+    }
 
+    // Also log via the buffered console for post-mortem analysis.
+    let panic_msg = info.message();
     if let Some(location) = info.location() {
         error!(
             "Kernel panicked at {}:{}:{}: {}",

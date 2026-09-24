@@ -34,7 +34,6 @@ SECTIONS
         *(.dynsym .dynstr .hash .gnu.hash)
         *(.eh_frame)
         *(.comment)
-        *(.note*)
     }
 
     /*
@@ -101,8 +100,9 @@ SECTIONS
 
     /*
      * Scratch pages used by the boot assembly to build the initial
-     * 4-level page tables.  64 pages = 256 KiB is more than enough
-     * for identity + higher-half mappings of the first 4 MiB.
+     * 4-level page tables.  5 pages are used (PML4, PDPT_id, PDPT_kh,
+     * PD_id, PD_kh) — no separate page tables because boot uses 2 MiB
+     * large pages (PSE).  64 pages = 256 KiB reserved for future use.
      */
     . = ALIGN(PAGE_SIZE);
     __init_pages_start = .;
@@ -130,4 +130,12 @@ SECTIONS
     }
 
     __image_end = .;
+
+    /*
+     * PVH ELF note for QEMU -kernel boot (XEN_ELFNOTE_PV_INFO).
+     * Placed at the end of the ELF, outside all LOAD segments, so
+     * GRUB does not try to load it into memory.  QEMU parses the
+     * ELF to find this note when using the -kernel flag.
+     */
+    .note.Xen : { *(.note.Xen) } :NOTE
 }
