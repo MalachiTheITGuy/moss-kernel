@@ -220,13 +220,19 @@ pub fn ist_mc_top() -> u64 {
 /// from the linker via `extern` symbols or `as u64` casts).
 pub unsafe fn set_idt_entry(vector: usize, handler: u64, ist: u8, dpl: u8) {
     assert!(vector < IDT_ENTRIES);
-    KERNEL_IDT[vector] = IdtEntry::interrupt_gate(handler, ist, dpl);
+    // SAFETY: single-threaded boot context; `vector` bounds-checked above.
+    unsafe {
+        KERNEL_IDT[vector] = IdtEntry::interrupt_gate(handler, ist, dpl);
+    }
 }
 
 /// Populate an IDT entry as a trap gate.
 pub unsafe fn set_idt_trap(vector: usize, handler: u64, dpl: u8) {
     assert!(vector < IDT_ENTRIES);
-    KERNEL_IDT[vector] = IdtEntry::trap_gate(handler, 0, dpl);
+    // SAFETY: single-threaded boot context; `vector` bounds-checked above.
+    unsafe {
+        KERNEL_IDT[vector] = IdtEntry::trap_gate(handler, 0, dpl);
+    }
 }
 
 /// Set up IST entries in the TSS for double-fault, NMI, and
@@ -236,9 +242,12 @@ pub unsafe fn set_idt_trap(vector: usize, handler: u64, dpl: u8) {
 ///
 /// `tss` must point to the live TSS loaded in the GDT.
 pub unsafe fn setup_ist(tss: *mut super::gdt::Tss) {
-    (*tss).ist1 = ist_df_top();
-    (*tss).ist2 = ist_nmi_top();
-    (*tss).ist3 = ist_mc_top();
+    // SAFETY: caller guarantees `tss` is a valid, live TSS pointer.
+    unsafe {
+        (*tss).ist1 = ist_df_top();
+        (*tss).ist2 = ist_nmi_top();
+        (*tss).ist3 = ist_mc_top();
+    }
 }
 
 /// Load the IDTR register with the address and size of the kernel IDT.
@@ -250,9 +259,13 @@ pub unsafe fn setup_ist(tss: *mut super::gdt::Tss) {
 pub unsafe fn load_idt() {
     let idtr = Idtr {
         limit: (IDT_SIZE - 1) as u16,
+        // SAFETY: takes the physical address of the static IDT; single-threaded boot.
         base: core::ptr::addr_of!(KERNEL_IDT) as u64,
     };
-    asm!("lidt [{}]", in(reg) &idtr);
+    // SAFETY: loads IDTR with a valid descriptor; interrupts must be disabled.
+    unsafe {
+        asm!("lidt [{}]", in(reg) &idtr);
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -310,14 +323,20 @@ pub unsafe fn setup_idt() {
 
         // Vectors with IST assignments or user-visible DPL are handled
         // explicitly; everything else is a plain kernel interrupt gate.
-        KERNEL_IDT[vector] = match vector {
-            2   => IdtEntry::interrupt_gate(addr, IST_NMI, 0),  // NMI — IST2
-            8   => IdtEntry::interrupt_gate(addr, IST_DF, 0),   // #DF — IST1
-            18  => IdtEntry::interrupt_gate(addr, IST_MC, 0),   // #MC — IST3
-            0x80 => IdtEntry::trap_gate(addr, 0, 3),            // SYSCALL — DPL=3
-            _   => IdtEntry::interrupt_gate(addr, 0, 0),
-        };
+        // SAFETY: single-threaded boot; vector in 0..IDT_ENTRIES range.
+        unsafe {
+            KERNEL_IDT[vector] = match vector {
+                2 => IdtEntry::interrupt_gate(addr, IST_NMI, 0), // NMI — IST2
+                8 => IdtEntry::interrupt_gate(addr, IST_DF, 0),  // #DF — IST1
+                18 => IdtEntry::interrupt_gate(addr, IST_MC, 0), // #MC — IST3
+                0x80 => IdtEntry::trap_gate(addr, 0, 3),         // SYSCALL — DPL=3
+                _ => IdtEntry::interrupt_gate(addr, 0, 0),
+            };
+        }
     }
 
-    load_idt();
+    // SAFETY: IDT fully populated; interrupts disabled; called once.
+    unsafe {
+        load_idt();
+    }
 }

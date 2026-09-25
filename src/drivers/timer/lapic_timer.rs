@@ -33,13 +33,13 @@ use libkernel::memory::proc_vm::address_space::{KernAddressSpace, VirtualMemory}
 use crate::{
     arch::ArchImpl,
     drivers::{
+        Driver, DriverManager,
         init::PlatformBus,
         timer::{HwTimer, Instant},
-        Driver, DriverManager,
     },
     interrupts::{
-        get_interrupt_root, ClaimedInterrupt, InterruptConfig, InterruptDescriptor,
-        InterruptHandler, TriggerMode,
+        ClaimedInterrupt, InterruptConfig, InterruptDescriptor, InterruptHandler, TriggerMode,
+        get_interrupt_root,
     },
     kernel_driver,
 };

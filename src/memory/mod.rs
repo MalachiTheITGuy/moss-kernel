@@ -2,11 +2,11 @@ use crate::{
     arch::{Arch, ArchImpl},
     sync::{OnceLock, SpinLock},
 };
+pub use libkernel::memory::allocators::phys::FrameAllocator;
 use libkernel::memory::{
     allocators::smalloc::{RegionList, Smalloc},
     region::PhysMemoryRegion,
 };
-pub use libkernel::memory::allocators::phys::FrameAllocator;
 
 pub mod brk;
 pub mod fault;

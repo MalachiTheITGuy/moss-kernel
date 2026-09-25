@@ -11,14 +11,20 @@
 //! Each redirection table entry maps one IRQ line to an LAPIC vector with
 //! configurable delivery mode, polarity, and mask state.
 
-use alloc::{boxed::Box, sync::{Arc, Weak}};
+use alloc::{
+    boxed::Box,
+    sync::{Arc, Weak},
+};
 use libkernel::{
     error::{KernelError, Result},
     memory::{address::PA, region::PhysMemoryRegion},
 };
 use log::info;
-use tock_registers::{interfaces::{Readable, Writeable}, register_structs};
 use tock_registers::registers::{ReadOnly, ReadWrite};
+use tock_registers::{
+    interfaces::{Readable, Writeable},
+    register_structs,
+};
 
 use crate::{
     arch::ArchImpl,

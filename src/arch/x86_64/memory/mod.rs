@@ -20,11 +20,8 @@ pub fn translate_kernel_va(va: VA) -> Option<PA> {
 #[macro_export]
 macro_rules! ksym_pa {
     ($sym:expr) => {{
-        let v = libkernel::memory::address::VA::from_value(
-            core::ptr::addr_of!($sym) as usize,
-        );
-        $crate::arch::x86_64::memory::translate_kernel_va(v)
-            .expect("ksym_pa: translate failed")
+        let v = libkernel::memory::address::VA::from_value(core::ptr::addr_of!($sym) as usize);
+        $crate::arch::x86_64::memory::translate_kernel_va(v).expect("ksym_pa: translate failed")
     }};
 }
 

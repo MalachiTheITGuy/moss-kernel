@@ -182,10 +182,7 @@ impl Uart16550 {
 
         // 6. Enable and reset FIFOs.
         unsafe {
-            portio::outb(
-                self.base + IIR_FCR,
-                FCR_FIFO_EN | FCR_RX_CLR | FCR_TX_CLR,
-            );
+            portio::outb(self.base + IIR_FCR, FCR_FIFO_EN | FCR_RX_CLR | FCR_TX_CLR);
         }
 
         // 7. Set DTR/RTS (modem control).
@@ -259,34 +256,29 @@ impl Driver for Uart16550 {
 /// rather than via FDT/ACPI probing.  This function creates the driver,
 /// wraps it in the generic [`Uart`] wrapper with an interrupt claim, and
 /// registers the character device.
-pub fn uart16550_init(
-    _bus: &mut PlatformBus,
-    dm: &mut DriverManager,
-) -> Result<()> {
-    let interrupt_root = crate::interrupts::get_interrupt_root()
-        .ok_or(KernelError::NotSupported)?;
+pub fn uart16550_init(_bus: &mut PlatformBus, dm: &mut DriverManager) -> Result<()> {
+    let interrupt_root =
+        crate::interrupts::get_interrupt_root().ok_or(KernelError::NotSupported)?;
 
     let interrupt_config = crate::interrupts::InterruptConfig {
         descriptor: InterruptDescriptor::Spi(COM1_IRQ),
         trigger: crate::interrupts::TriggerMode::EdgeRising,
     };
 
-    let uart_cdev = UART_CHAR_DEV
-        .get()
-        .ok_or(KernelError::NotSupported)?;
+    let uart_cdev = UART_CHAR_DEV.get().ok_or(KernelError::NotSupported)?;
 
-    let driver = interrupt_root.claim_interrupt(
-        interrupt_config,
-        |claimed_interrupt| {
-            let hw = Uart16550::new(COM1_BASE);
-            Uart::new(hw, claimed_interrupt, "uart16550")
-        },
-    )?;
+    let driver = interrupt_root.claim_interrupt(interrupt_config, |claimed_interrupt| {
+        let hw = Uart16550::new(COM1_BASE);
+        Uart::new(hw, claimed_interrupt, "uart16550")
+    })?;
 
     // Register as the active console (minor 0).
     uart_cdev.register_console(driver, true)?;
 
-    info!("x86_64 UART: 16550 registered at COM1 (I/O 0x{:x})", COM1_BASE);
+    info!(
+        "x86_64 UART: 16550 registered at COM1 (I/O 0x{:x})",
+        COM1_BASE
+    );
 
     Ok(())
 }
