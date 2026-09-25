@@ -50,7 +50,7 @@
  * note of type 0x12 with name "Xen" so it knows the entry point.
  * The _start address must match the vaddr field below.
  * ------------------------------------------------------------------ */
-.section .note.Xen, "", @note
+.section .note.Xen, "a", @note
 .align 4
     .long   4                                   /* namesz: "Xen\0"             */
     .long   24                                  /* descsz: pv_info struct      */
@@ -103,12 +103,23 @@ _start:
     outb    %al, %dx
     popl    %eax                /* restore Multiboot2 register magic */
 
-    /* ---- 1. Validate Multiboot2 magic ---- */
+    /* ---- 1. Detect boot protocol ----
+     * Multiboot2: EAX = 0x36d76289, EBX = info pointer
+     * PVH (Xen):  EAX = 0, EBX = hvm_start_info pointer
+     *             QEMU uses PVH when loading ELF with -kernel flag.
+     *
+     * EBX is callee-saved and survives the BSS zero that follows. */
     cmpl    $MB2_REG_MAGIC, %eax
-    jne     .Lhang
-
-    /* EBX = Multiboot2 info pointer (physical address).
-     * Keep it in EBX across the BSS zero (EBX is callee-saved). */
+    je      .Lmb2_boot
+    /* Not Multiboot2 — check for PVH entry (EAX must be 0) */
+    testl   %eax, %eax
+    jnz     .Lhang              /* unknown entry, hang */
+    /* PVH: zero EBX (no Multiboot2 tags to pass). */
+    xorl    %ebx, %ebx
+    jmp     .Lboot_common
+.Lmb2_boot:
+    /* Multiboot2: EBX = Multiboot2 info pointer — keep as-is. */
+.Lboot_common:
 
     /* ---- 2. Zero BSS ---- */
     movl    $__bss_start, %edi

@@ -61,6 +61,13 @@ SECTIONS
     }
     __text_boot_end = .;
 
+    /*
+     * PVH ELF note for QEMU -kernel boot (XEN_ELFNOTE_PV_INFO).
+     * MUST be inside a LOAD segment so QEMU's ELF loader can find it.
+     * Placed right after .text.boot to stay in the first LOAD segment.
+     */
+    .note.Xen : { *(.note.Xen) }
+
     __text_start = .;
     .text : ALIGN(4096) { *(.text .text.*) }
     __text_end = .;
@@ -130,12 +137,4 @@ SECTIONS
     }
 
     __image_end = .;
-
-    /*
-     * PVH ELF note for QEMU -kernel boot (XEN_ELFNOTE_PV_INFO).
-     * Placed at the end of the ELF, outside all LOAD segments, so
-     * GRUB does not try to load it into memory.  QEMU parses the
-     * ELF to find this note when using the -kernel flag.
-     */
-    .note.Xen : { *(.note.Xen) } :NOTE
 }

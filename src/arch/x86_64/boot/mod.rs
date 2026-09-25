@@ -32,6 +32,35 @@ use libkernel::memory::address::{PA, TPA};
 use libkernel::memory::allocators::slab::allocator::SlabAllocator;
 use libkernel::memory::region::PhysMemoryRegion;
 
+// ── Early boot debug diagnostics ──────────────────────
+// Write a byte to QEMU debug port 0xe9 AND COM1 (0x3F8).
+// These are raw port I/O — safe to call before any driver init.
+
+/// Write a single diagnostic byte to QEMU debug port (0xe9) and COM1.
+#[inline]
+fn boot_diag(byte: u8) {
+    unsafe {
+        // QEMU debug console (ISA debugcon)
+        core::arch::asm!("out dx, al", in("dx") 0xe9_u16, in("al") byte);
+        // COM1 — wait for TX ready
+        let mut ready: u8;
+        core::arch::asm!(
+            "in al, dx",
+            out("al") ready,
+            in("dx") 0x3FD_u16,  // COM1 LSR
+        );
+        // Wait until bit 5 (THRE) is set
+        while ready & 0x20 == 0 {
+            core::arch::asm!(
+                "in al, dx",
+                out("al") ready,
+                in("dx") 0x3FD_u16,
+            );
+        }
+        core::arch::asm!("out dx, al", in("dx") 0x3F8_u16, in("al") byte);
+    }
+}
+
 /// Kernel base address in the higher-half virtual address space.
 /// Physical address 0x0 maps to this virtual address via the identity
 /// and higher-half page tables built in `start.S`.
@@ -115,6 +144,56 @@ struct MbootMmapEntry {
 
 /// Multiboot2 memory type: usable RAM.
 const MBOOT_MMAP_TYPE_AVAIL: u32 = 1;
+
+/// Initialise the physical frame allocator for PVH boot (no Multiboot2 tags).
+///
+/// When QEMU loads an ELF via `-kernel`, it uses PVH boot: EAX=0,
+/// EBX=hvm_start_info.  The kernel image is placed at the ELF-specified
+/// addresses.  We provide a conservative memory map covering physical RAM
+/// from `__image_end` to 2 GiB (matching QEMU's default `-m 2G`).
+///
+/// # Safety
+///
+/// Must be called once during single-threaded stage1, before the frame
+/// allocator is used.  The identity and higher-half page tables are active.
+unsafe fn init_pvh_memory() {
+    // Page-align __image_end.
+    let image_end = unsafe { addr_of!(__image_end) as usize };
+    let start = (image_end + 0xFFF) & !0xFFF; // round up to page boundary
+
+    // Conservative end: 2 GiB (matches QEMU -m 2G default).
+    const RAM_END: usize = 0x8000_0000;
+
+    if start >= RAM_END {
+        log::warn!(
+            "mboot: PVH memory init — image_end ({:#x}) >= RAM_END, no usable RAM",
+            start
+        );
+        return;
+    }
+
+    let region =
+        PhysMemoryRegion::from_start_end_address(PA::from_value(start), PA::from_value(RAM_END));
+
+    let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
+    if let Some(ref mut a) = *alloc {
+        if let Err(e) = a.add_memory(region) {
+            log::warn!(
+                "mboot: PVH failed to add RAM region 0x{:x}–0x{:x}: {}",
+                start,
+                RAM_END,
+                e,
+            );
+        } else {
+            log::info!(
+                "mboot: PVH added RAM 0x{:x}–0x{:x} ({} MiB)",
+                start,
+                RAM_END,
+                (RAM_END - start) / (1024 * 1024),
+            );
+        }
+    }
+}
 
 /// Parse the Multiboot2 memory map and register all usable RAM regions
 /// with the physical frame allocator.
@@ -383,49 +462,74 @@ unsafe fn parse_modules(info_phys: u64) {
 /// * `mboot_info_ptr` — physical address of the Multiboot2 info
 ///   structure passed by GRUB in EBX.
 ///
-/// # Returns
+/// Second-stage architecture initialisation.
 ///
-/// A virtual address of a new kernel stack to be used by
-/// `arch_init_stage2`.
+/// Called from `start.S` after switching to the kernel stack
+/// returned by `arch_init_stage1`. Runs on the proper kernel stack.
 ///
 /// # Safety
 ///
-/// Must only be called once from the assembly entry point.
+/// Must only be called once, after `arch_init_stage1` has completed.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
+    boot_diag(b'1'); // '1' — stage1 entry
+
     // Set up the early console logger so log::info! and friends work.
     crate::console::setup_console_logger();
+    boot_diag(b'A'); // 'A' — logger set up
 
-    log::info!("moss: x86_64 boot (Multiboot2)");
+    if mboot_info_ptr == 0 {
+        // ---- PVH boot path (QEMU -kernel with ELF) ----
+        log::info!("moss: x86_64 boot (PVH/QEMU)");
+        boot_diag(b'P'); // 'P' — PVH path
 
-    // Store the command line into BSS for stage2 access.
-    if unsafe { store_cmdline(mboot_info_ptr) } {
-        // SAFETY: BOOT_CMDLINE was populated by store_cmdline above.
-        let len = unsafe { BOOT_CMDLINE_LEN };
-        let bytes = unsafe { &BOOT_CMDLINE[..len] };
-        if let Ok(cmd) = core::str::from_utf8(bytes) {
-            log::info!("moss: boot cmdline: {}", cmd);
+        // No Multiboot2 tags — provide a default memory map.
+        // QEMU places RAM starting at physical 0; the kernel image occupies
+        // 0x100000 – __image_end.  We add all of physical RAM as usable,
+        // trusting the ELF loader placed us correctly.
+        unsafe { init_pvh_memory() };
+        boot_diag(b'M'); // 'M' — memory init done
+    } else {
+        // ---- Multiboot2 boot path (GRUB) ----
+        log::info!("moss: x86_64 boot (Multiboot2)");
+        boot_diag(b'B'); // 'B' — Multiboot2 path
+
+        // Store the command line into BSS for stage2 access.
+        if unsafe { store_cmdline(mboot_info_ptr) } {
+            // SAFETY: BOOT_CMDLINE was populated by store_cmdline above.
+            let len = unsafe { BOOT_CMDLINE_LEN };
+            let bytes = unsafe { &BOOT_CMDLINE[..len] };
+            if let Ok(cmd) = core::str::from_utf8(bytes) {
+                log::info!("moss: boot cmdline: {}", cmd);
+            }
         }
+        boot_diag(b'C'); // 'C' — cmdline parsed
+
+        // Parse Multiboot2 modules — extract initrd physical address range.
+        unsafe { parse_modules(mboot_info_ptr) };
+        boot_diag(b'K'); // 'K' — modules parsed
+
+        // Set up physical frame allocator from Multiboot2 memory map (tag type 6).
+        // SAFETY: Called during single-threaded stage1 boot; mboot_info_ptr is valid
+        // and points to the Multiboot2 information structure provided by the bootloader.
+        unsafe {
+            parse_memory_map(mboot_info_ptr)
+                .expect("parse_memory_map: failed to initialise frame allocator");
+        }
+        boot_diag(b'F'); // 'F' — frame allocator done
     }
 
-    // Parse Multiboot2 modules — extract initrd physical address range.
-    unsafe { parse_modules(mboot_info_ptr) };
-
-    // Set up physical frame allocator from Multiboot2 memory map (tag type 6).
-    // SAFETY: Called during single-threaded stage1 boot; mboot_info_ptr is valid
-    // and points to the Multiboot2 information structure provided by the bootloader.
-    unsafe {
-        parse_memory_map(mboot_info_ptr)
-            .expect("parse_memory_map: failed to initialise frame allocator");
-    }
+    boot_diag(b'S'); // 'S' — setting up kern addr space
 
     // Set up the kernel address space using the page tables built in start.S.
     // SAFETY: __init_pages_start is an extern static defined in start.S, valid
     // during stage1 after page tables are constructed.
     let init_pages_pa = unsafe { TPA::from_value(__init_pages_start as usize) };
     setup_kern_addr_space(init_pages_pa).expect("setup_kern_addr_space failed");
+    boot_diag(b'A'); // 'A' — kern addr space done (was 'K' to avoid clash with modules)
 
     log::info!("moss: stage1 complete, switching stack");
+    boot_diag(b'2'); // '2' — stage1 complete, going to stage2
 
     // Return the address of the kernel boot stack. The assembly
     // code will switch RSP to this address before calling stage2.
@@ -448,6 +552,7 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
 /// Must only be called once, after `arch_init_stage1` has completed.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn arch_init_stage2() {
+    boot_diag(b'a'); // 'a' — stage2 entry
     log::info!("moss: stage2 — x86_64 early init");
 
     // Initialize the frame allocator from the early bootstrap allocator
@@ -466,14 +571,17 @@ unsafe extern "C" fn arch_init_stage2() {
         .set(libkernel::memory::allocators::slab::allocator::SlabAllocator::new(frame_list))
         .unwrap_or_else(|_| panic!("SLAB_ALLOC already set"));
     super::memory::heap::KernelHeap::init_for_this_cpu();
+    boot_diag(b'b'); // 'b' — heap + frame allocator done
 
     // Initialize exceptions: IDT + syscall entry (Issue #16).
     crate::arch::x86_64::exceptions::exceptions_init().expect("exceptions init failed");
+    boot_diag(b'c'); // 'c' — exceptions (IDT) done
 
     // Enable hardware interrupts so that driver IRQ handlers can fire.
     // Must happen before run_initcalls() so that interrupt-driven drivers
     // can claim their IRQs.
     ArchImpl::enable_interrupts();
+    boot_diag(b'd'); // 'd' — interrupts enabled
 
     // Run all kernel_driver! init functions (LAPIC, I/O APIC, UART, HPET,
     // LAPIC timer, etc.).  The LAPIC init must link first so that the
@@ -483,6 +591,7 @@ unsafe extern "C" fn arch_init_stage2() {
     // This mirrors the ARM64 arch_init_stage2() flow:
     //   exceptions_init → enable_interrupts → run_initcalls → kmain
     unsafe { run_initcalls() };
+    boot_diag(b'e'); // 'e' — initcalls done
 
     // Reconstruct the command line from BSS statics populated by stage1.
     let args = unsafe {
@@ -514,10 +623,12 @@ unsafe extern "C" fn arch_init_stage2() {
     }
 
     log::info!("moss: entering kmain (arch: x86_64)");
+    boot_diag(b'f'); // 'f' — about to vdso_init
 
     if let Err(e) = vdso_init() {
         log::error!("vdso: {}", e);
     }
+    boot_diag(b'g'); // 'g' — vdso done, about to kmain
 
     // Allocate a zeroed initial userspace context on the stack.
     // kmain → dispatch_userspace_task will write the real context

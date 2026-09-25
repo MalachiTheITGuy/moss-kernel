@@ -27,7 +27,7 @@ use crate::{
 
 use super::Arch;
 
-mod boot;
+pub(crate) mod boot;
 mod cpu_ops;
 mod exceptions;
 mod memory;

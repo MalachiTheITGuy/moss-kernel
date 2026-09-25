@@ -25,6 +25,15 @@ use libkernel::{
     CpuOps,
     fs::{BlockDevice, OpenFlags, attr::FilePermissions, path::Path, pathbuf::PathBuf},
 };
+#[cfg(target_arch = "x86_64")]
+use libkernel::{
+    fs::blk::ramdisk::RamdiskBlkDev,
+    memory::{
+        address::PA,
+        proc_vm::address_space::VirtualMemory,
+        region::PhysMemoryRegion,
+    },
+};
 use log::{error, warn};
 use process::ctx::UserCtx;
 use sched::{
@@ -162,7 +171,25 @@ async fn launch_init(mut ctx: ProcessCtx, mut opts: KOptions) {
         }
     };
     #[cfg(target_arch = "x86_64")]
-    let initrd_block_dev: Option<Box<dyn BlockDevice>> = None;
+    let initrd_block_dev: Option<Box<dyn BlockDevice>> = {
+        use libkernel::memory::address::VA;
+        if let Some((start, end)) = crate::arch::x86_64::boot::get_initrd() {
+            let region = PhysMemoryRegion::from_start_end_address(
+                PA::from_value(start as _),
+                PA::from_value(end as _),
+            );
+            Some(Box::new(
+                RamdiskBlkDev::new(
+                    region,
+                    VA::from_value(0xffff_9800_0000_0000),
+                    &mut *ArchImpl::kern_address_space().lock_save_irq(),
+                )
+                .unwrap(),
+            ))
+        } else {
+            None
+        }
+    };
 
     // Set time to rtc time if possible
     #[cfg(target_arch = "aarch64")]
