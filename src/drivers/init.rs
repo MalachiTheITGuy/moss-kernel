@@ -1,6 +1,6 @@
-use super::{Driver, DriverManager};
 #[cfg(target_arch = "aarch64")]
 use super::probe::{DeviceDescriptor, DeviceMatchType, ProbeFn};
+use super::{Driver, DriverManager};
 use crate::{drivers::DM, sync::SpinLock};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use libkernel::error::{KernelError, ProbeError, Result};

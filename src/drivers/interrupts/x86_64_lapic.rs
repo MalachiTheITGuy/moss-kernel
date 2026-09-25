@@ -33,10 +33,10 @@ use tock_registers::{
 
 use crate::{
     arch::ArchImpl,
-    drivers::{init::PlatformBus, Driver, DriverManager},
+    drivers::{Driver, DriverManager, init::PlatformBus},
     interrupts::{
-        set_interrupt_root, InterruptConfig, InterruptContext, InterruptController,
-        InterruptDescriptor, InterruptManager,
+        InterruptConfig, InterruptContext, InterruptController, InterruptDescriptor,
+        InterruptManager, set_interrupt_root,
     },
     kernel_driver,
     sync::SpinLock,

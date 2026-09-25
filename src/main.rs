@@ -23,10 +23,7 @@ use fs::VFS;
 use getargs::{Opt, Options};
 use libkernel::{
     CpuOps,
-    fs::{
-        BlockDevice, OpenFlags, attr::FilePermissions, path::Path,
-        pathbuf::PathBuf,
-    },
+    fs::{BlockDevice, OpenFlags, attr::FilePermissions, path::Path, pathbuf::PathBuf},
 };
 use log::{error, warn};
 use process::ctx::UserCtx;

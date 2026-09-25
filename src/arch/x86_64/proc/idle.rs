@@ -7,7 +7,7 @@
 
 use super::super::ptrace::X86_64PtraceGPRegs;
 use crate::{
-    memory::{page::ClaimedPage, PageOffsetTranslator},
+    memory::{PageOffsetTranslator, page::ClaimedPage},
     process::owned::OwnedTask,
 };
 use libkernel::memory::{

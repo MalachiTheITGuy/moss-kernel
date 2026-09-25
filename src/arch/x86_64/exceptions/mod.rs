@@ -16,8 +16,8 @@
 //! GP registers and calls [`x86_64_interrupt_handler`].
 
 use crate::{
-    interrupts::{get_interrupt_root, ClaimedInterrupt},
-    sched::{syscall_ctx::ProcessCtx, uspc_ret::dispatch_userspace_task},
+    interrupts::{ClaimedInterrupt, get_interrupt_root},
+    sched::{spawn_kernel_work, syscall_ctx::ProcessCtx, uspc_ret::dispatch_userspace_task},
 };
 use core::{arch::global_asm, fmt::Display};
 use libkernel::{error::Result, memory::address::VA};
@@ -145,9 +145,7 @@ unsafe extern "C" fn x86_64_interrupt_handler(state: &mut ExceptionState) {
         // exclusive access to `OwnedTask` is guaranteed.
         let mut ctx = unsafe { ProcessCtx::from_current() };
         let gp_regs = X86_64PtraceGPRegs::from(&*state);
-        ctx.task_mut()
-            .ctx
-            .save_user_ctx(&gp_regs as *const _);
+        ctx.task_mut().ctx.save_user_ctx(&gp_regs as *const _);
     }
 
     match vector {
@@ -156,9 +154,16 @@ unsafe extern "C" fn x86_64_interrupt_handler(state: &mut ExceptionState) {
         vectors::GENERAL_PROTECTION_FAULT => fault::handle_gp_fault(state),
         vectors::DOUBLE_FAULT => fault::handle_double_fault(state),
 
-        // ── System call (int 0x80 / syscall instruction) ──
+        // ── System call (syscall instruction) ──
         vectors::SYSCALL => {
-            syscall::syscall_dispatch(state);
+            // SAFETY: We only reach here when from_user is true (syscall
+            // transitions ring 3→ring 0), so ProcessCtx::from_current is valid.
+            let ctx = unsafe { ProcessCtx::from_current() };
+            // SAFETY: The ctx clone won't be polled until
+            // `dispatch_userspace_task` at which point this variable will have
+            // gone out of scope.
+            let mut ctx2 = unsafe { ctx.clone() };
+            spawn_kernel_work(&mut ctx2, syscall::handle_syscall(ctx));
         }
 
         // ── Hardware IRQs ──
