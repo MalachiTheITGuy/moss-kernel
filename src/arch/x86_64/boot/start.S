@@ -80,6 +80,13 @@ mb2_header:
     .long   8                                  /* size of this tag           */
 mb2_header_end:
 
+/* ---- Saved boot EAX for protocol detection in Rust ----
+ * Placed in .text (not .bss) so it survives BSS zeroing. */
+.section .text.boot._start, "ax", @progbits
+.align 4
+boot_eax:
+    .space 4
+
 /* =================================================================
  * _start — 32-bit protected-mode entry point
  * ================================================================= */
@@ -103,6 +110,9 @@ _start:
     outb    %al, %dx
     popl    %eax                /* restore Multiboot2 register magic */
 
+    /* Save EAX for Rust protocol detection (in .text, survives BSS zero). */
+    movl    %eax, (boot_eax)
+
     /* ---- 1. Detect boot protocol ----
      * Multiboot2: EAX = 0x36d76289, EBX = info pointer
      * PVH (Xen):  EAX = 0, EBX = hvm_start_info pointer
@@ -114,8 +124,7 @@ _start:
     /* Not Multiboot2 — check for PVH entry (EAX must be 0) */
     testl   %eax, %eax
     jnz     .Lhang              /* unknown entry, hang */
-    /* PVH: zero EBX (no Multiboot2 tags to pass). */
-    xorl    %ebx, %ebx
+    /* PVH: EBX = hvm_start_info pointer — keep as-is for Rust parsing. */
     jmp     .Lboot_common
 .Lmb2_boot:
     /* Multiboot2: EBX = Multiboot2 info pointer — keep as-is. */

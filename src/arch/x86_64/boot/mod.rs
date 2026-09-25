@@ -73,6 +73,9 @@ unsafe extern "C" {
     static __init_pages_start: u8;
     static __image_start: u8;
     static __image_end: u8;
+    /// Boot protocol EAX value saved by start.S (in .text, survives BSS zero).
+    /// 0x36d76289 = Multiboot2, 0 = PVH.
+    static boot_eax: u32;
 }
 
 /// Kernel boot stack.
@@ -105,6 +108,9 @@ const MBOOT_TAG_MMAP: u32 = 6;
 
 /// End-of-tags sentinel.
 const MBOOT_TAG_END: u32 = 0;
+
+/// Multiboot2 register magic — EAX value passed by GRUB on entry.
+const MB2_REG_MAGIC: u32 = 0x36d76289;
 
 // ──────────────────────────────────────────────
 //  BSS statics for stage1 → stage2 handoff
@@ -192,6 +198,208 @@ unsafe fn init_pvh_memory() {
                 (RAM_END - start) / (1024 * 1024),
             );
         }
+    }
+}
+
+// ──────────────────────────────────────────────
+//  PVH hvm_start_info parsing (Xen / QEMU -kernel)
+// ──────────────────────────────────────────────
+
+/// Xen PVH hvm_start_info — physical address passed in EBX on PVH entry.
+///
+/// Layout (48 bytes, version >= 1):
+/// ```text
+///  Off  Size  Field
+///   0   4     version          (uint32)
+///   4   4     num_modules      (uint32)
+///   8   8     modlist          (uint64 — phys addr of first hvm_modlist_entry)
+///  16   8     cmdline          (uint64 — phys addr of null-terminated string)
+///  24   8     rsdp             (uint64 — unused)
+///  32   8     memmap_paddr     (uint64 — phys addr of hvm_memmap_entry array)
+///  40   4     memmap_entries   (uint32)
+///  44   4     reserved         (uint32)
+/// ```
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct HvmStartInfo {
+    version: u32,
+    _num_modules: u32,
+    modlist: u64,
+    cmdline: u64,
+    _rsdp: u64,
+    memmap_paddr: u64,
+    memmap_entries: u32,
+    _reserved: u32,
+}
+
+/// Xen PVH hvm_modlist_entry — describes one boot module (e.g. initrd).
+///
+/// Layout (24 bytes):
+/// ```text
+///  Off  Size  Field
+///   0   8     mod_start  (uint64 — phys addr)
+///   8   8     mod_end    (uint64 — phys addr)
+///  16   8     cmdline    (uint64 — phys addr of string)
+/// ```
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct HvmModlistEntry {
+    mod_start: u64,
+    mod_end: u64,
+    _cmdline: u64,
+}
+
+/// Xen PVH hvm_memmap_entry — one region of the physical memory map.
+///
+/// Layout (24 bytes):
+/// ```text
+///  Off  Size  Field
+///   0   8     addr      (uint64 — phys addr of region start)
+///   8   8     size      (uint64 — region size in bytes)
+///  16   4     type      (uint32 — 1 = RAM, other = reserved)
+///  20   4     reserved  (uint32)
+/// ```
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct HvmMemmapEntry {
+    addr: u64,
+    size: u64,
+    typ: u32,
+    _reserved: u32,
+}
+
+/// Memory type indicating usable RAM in hvm_memmap_entry.
+const HVM_MEMMAP_TYPE_RAM: u32 = 1;
+
+/// Parse the Xen PVH hvm_start_info structure and extract initrd, cmdline,
+/// and memory map information for the kernel boot.
+///
+/// The `info_phys` parameter is the physical address of the hvm_start_info
+/// structure passed by QEMU in EBX during PVH boot.
+///
+/// This function:
+/// 1. Extracts initrd module address (mod_start/mod_end) into INITRD_START/END.
+/// 2. Extracts kernel cmdline into BOOT_CMDLINE/BOOT_CMDLINE_LEN.
+/// 3. Parses the e820-style memory map and registers RAM regions with the
+///    frame allocator.
+///
+/// Falls back to `init_pvh_memory()` if the structure version is < 1 or
+/// has no memory map entries.
+///
+/// # Safety
+///
+/// `info_phys` must be a valid physical address pointing to an hvm_start_info
+/// structure. The identity and higher-half page tables are active.
+unsafe fn init_pvh_boot_info(info_phys: u64) {
+    // Convert physical address to higher-half virtual address for reading.
+    let info_virt = info_phys.wrapping_add(KERNEL_BASE);
+
+    // Read the hvm_start_info header (48 bytes).
+    let info = unsafe { core::ptr::read(info_virt as *const HvmStartInfo) };
+
+    log::info!(
+        "moss: PVH hvm_start_info v{}, memmap_entries={}",
+        info.version,
+        info.memmap_entries,
+    );
+
+    // --- 1. Extract initrd from first module entry ---
+    if info.modlist != 0 && info._num_modules > 0 {
+        let modlist_virt = info.modlist.wrapping_add(KERNEL_BASE);
+        let module = unsafe { core::ptr::read(modlist_virt as *const HvmModlistEntry) };
+
+        if module.mod_start > 0 && module.mod_end > module.mod_start {
+            unsafe {
+                INITRD_START = module.mod_start;
+                INITRD_END = module.mod_end;
+            }
+            log::info!(
+                "moss: PVH initrd 0x{:x}–0x{:x} ({} bytes)",
+                module.mod_start,
+                module.mod_end,
+                module.mod_end - module.mod_start,
+            );
+        }
+    }
+
+    // --- 2. Extract kernel command line ---
+    if info.cmdline != 0 {
+        let cmdline_virt = info.cmdline.wrapping_add(KERNEL_BASE);
+        // Read up to BOOT_CMDLINE_MAX bytes, looking for null terminator.
+        let src = cmdline_virt as *const u8;
+        let mut len: usize = 0;
+        while len < BOOT_CMDLINE_MAX {
+            let byte = unsafe { core::ptr::read(src.add(len)) };
+            if byte == 0 {
+                break;
+            }
+            len += 1;
+        }
+
+        if len > 0 && len < BOOT_CMDLINE_MAX {
+            unsafe {
+                let dst = addr_of_mut!(BOOT_CMDLINE) as *mut u8;
+                core::ptr::copy_nonoverlapping(src, dst, len);
+                *dst.add(len) = 0;
+                *addr_of_mut!(BOOT_CMDLINE_LEN) = len;
+            }
+            // Log the cmdline (up to 128 chars for diagnostics).
+            let log_len = len.min(128);
+            let bytes = unsafe { slice::from_raw_parts(cmdline_virt as *const u8, log_len) };
+            if let Ok(cmd) = core::str::from_utf8(bytes) {
+                log::info!("moss: PVH boot cmdline: {}", cmd);
+            }
+        }
+    }
+
+    // --- 3. Parse memory map and register RAM regions ---
+    if info.version >= 1 && info.memmap_paddr != 0 && info.memmap_entries > 0 {
+        let memmap_virt = info.memmap_paddr.wrapping_add(KERNEL_BASE);
+        let entries = memmap_virt as *const HvmMemmapEntry;
+        let mut total_ram: u64 = 0;
+        let mut regions_added: u32 = 0;
+
+        for i in 0..info.memmap_entries as usize {
+            let entry = unsafe { core::ptr::read(entries.add(i)) };
+
+            if entry.typ == HVM_MEMMAP_TYPE_RAM && entry.size > 0 {
+                let start = entry.addr as usize;
+                let end = (entry.addr + entry.size) as usize;
+
+                let region = PhysMemoryRegion::from_start_end_address(
+                    PA::from_value(start),
+                    PA::from_value(end),
+                );
+
+                let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
+                if let Some(ref mut a) = *alloc {
+                    if let Err(e) = a.add_memory(region) {
+                        log::warn!(
+                            "moss: PVH failed to add RAM 0x{:x}–0x{:x}: {}",
+                            start,
+                            end,
+                            e,
+                        );
+                    } else {
+                        regions_added += 1;
+                        total_ram += entry.size;
+                    }
+                }
+            }
+        }
+
+        log::info!(
+            "moss: PVH memory map: {} RAM regions, {} MiB total",
+            regions_added,
+            total_ram / (1024 * 1024),
+        );
+    } else {
+        // Fallback: no valid memory map — use conservative 2 GiB mapping.
+        log::info!(
+            "moss: PVH no memmap (v{}), using conservative 2 GiB map",
+            info.version
+        );
+        unsafe { init_pvh_memory() };
     }
 }
 
@@ -478,16 +686,24 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
     crate::console::setup_console_logger();
     boot_diag(b'A'); // 'A' — logger set up
 
-    if mboot_info_ptr == 0 {
+    // Detect boot protocol: boot_eax was saved by start.S before BSS zero.
+    // 0x36d76289 = Multiboot2 (GRUB), 0 = PVH (QEMU -kernel).
+    let is_pvh = unsafe { boot_eax } != MB2_REG_MAGIC;
+
+    if is_pvh {
         // ---- PVH boot path (QEMU -kernel with ELF) ----
         log::info!("moss: x86_64 boot (PVH/QEMU)");
         boot_diag(b'P'); // 'P' — PVH path
 
-        // No Multiboot2 tags — provide a default memory map.
-        // QEMU places RAM starting at physical 0; the kernel image occupies
-        // 0x100000 – __image_end.  We add all of physical RAM as usable,
-        // trusting the ELF loader placed us correctly.
-        unsafe { init_pvh_memory() };
+        // Parse hvm_start_info: extract initrd, cmdline, and memory map.
+        // mboot_info_ptr contains the hvm_start_info physical address from EBX.
+        if mboot_info_ptr != 0 {
+            unsafe { init_pvh_boot_info(mboot_info_ptr) };
+        } else {
+            // PVH but no start_info — shouldn't happen with modern QEMU.
+            log::warn!("moss: PVH but hvm_start_info is NULL, using fallback");
+            unsafe { init_pvh_memory() };
+        }
         boot_diag(b'M'); // 'M' — memory init done
     } else {
         // ---- Multiboot2 boot path (GRUB) ----
