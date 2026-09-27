@@ -230,7 +230,18 @@ pub fn default_handler(state: &ExceptionState) {
 /// boot.
 pub fn exceptions_init() -> Result<()> {
     unsafe {
-        crate::arch::x86_64::boot::idt::setup_idt();
+        // Load the full kernel GDT with TSS (replaces the minimal
+        // 3-entry boot GDT from start.S).  The TSS provides the ring-0
+        // stack pointer (RSP0) and IST entries needed for interrupts.
+        super::boot::gdt::setup_boot_gdt_tss();
+
+        // Fill IST entries (DF, NMI, MC stacks) in the TSS.
+        super::boot::idt::setup_ist(
+            core::ptr::addr_of_mut!(super::boot::gdt::BOOT_TSS),
+        );
+
+        // Populate and load the IDT.
+        super::boot::idt::setup_idt();
     }
 
     unsafe {

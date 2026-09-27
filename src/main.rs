@@ -108,14 +108,48 @@ impl core::fmt::Write for EarlyUart {
 fn on_panic(info: &PanicInfo) -> ! {
     ArchImpl::disable_interrupts();
 
-    // Direct COM1 output for early-boot panics (console may be buffered).
-    // Write panic marker byte-by-byte to avoid allocation through format_args!.
+    // Direct COM1 + debugcon output for early-boot panics.
+    // The logger may not be initialized yet, so write directly.
     {
-        let mut uart = EarlyUart::new(0x3F8);
-        const PANIC_MSG: &[u8] = b"\r\n*** PANIC ***\r\n";
-        for &b in PANIC_MSG {
+        let uart = EarlyUart::new(0x3F8);
+        let hdr = b"\r\n*** PANIC ***\r\n";
+        for &b in hdr {
             while uart.inb(5) & 0x20 == 0 {}
             uart.outb(0, b);
+        }
+        // Write location + message to debugcon (0xe9) — strictly no allocation.
+        unsafe fn dputc(ch: u8) {
+            core::arch::asm!("out dx, al", in("dx") 0xe9u16, in("al") ch,
+                options(nostack, nomem));
+        }
+        unsafe fn dprint(s: &[u8]) { for &b in s { dputc(b); } }
+        unsafe fn dprint_u32(mut n: u32) {
+            if n == 0 { dputc(b'0'); return; }
+            let mut buf = [0u8; 10];
+            let mut i = buf.len();
+            while n > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+            dprint(&buf[i..]);
+        }
+        unsafe {
+            if let Some(loc) = info.location() {
+                dprint(b"\r\nPanic at ");
+                dprint(loc.file().as_bytes());
+                dputc(b':');
+                dprint_u32(loc.line());
+                dputc(b':');
+                dprint_u32(loc.column());
+                dprint(b"\r\n");
+            }
+            // Format the full panic message via a debugcon writer.
+            struct Dcon;
+            impl core::fmt::Write for Dcon {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    for &b in s.as_bytes() { unsafe { dputc(b); } }
+                    Ok(())
+                }
+            }
+            use core::fmt::Write;
+            let _ = write!(Dcon, "{}\r\n", info.message());
         }
     }
 

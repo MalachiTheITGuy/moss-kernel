@@ -85,8 +85,12 @@ impl CharDriver for NullCharDev {
 }
 
 pub fn null_chardev_init(_bus: &mut PlatformBus, dm: &mut DriverManager) -> Result<()> {
-    let cdev = NullCharDev::new()?;
-    dm.register_char_driver(ReservedMajors::Null as _, Arc::new(cdev))
+    let null = NullCharDev::new()?;
+    dm.register_char_driver(
+        ReservedMajors::Null as _,
+        Arc::new(null) as Arc<dyn CharDriver>,
+    );
+    Ok(())
 }
 
 kernel_driver!(null_chardev_init);

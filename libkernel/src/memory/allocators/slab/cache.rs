@@ -53,9 +53,10 @@ impl PtrCache {
         &mut self,
         slab_alloc: &mut SlabManager<CPU, A, T>,
     ) {
-        while !self.is_full()
-            && let Some(ptr) = slab_alloc.try_alloc()
-        {
+        while self.next_free < PTRS_PER_SZ_CLASS {
+            let Some(ptr) = slab_alloc.try_alloc() else {
+                break;
+            };
             self.ptrs[self.next_free] = ptr;
             self.next_free += 1;
         }

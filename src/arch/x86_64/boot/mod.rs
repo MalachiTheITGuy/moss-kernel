@@ -38,7 +38,7 @@ use libkernel::memory::region::PhysMemoryRegion;
 
 /// Write a single diagnostic byte to QEMU debug port (0xe9) and COM1.
 #[inline]
-fn boot_diag(byte: u8) {
+pub(crate) fn boot_diag(byte: u8) {
     unsafe {
         // QEMU debug console (ISA debugcon)
         core::arch::asm!("out dx, al", in("dx") 0xe9_u16, in("al") byte);
@@ -61,20 +61,56 @@ fn boot_diag(byte: u8) {
     }
 }
 
+/// Disable the local APIC via IA32_APIC_BASE MSR (bit 11 = APIC Software Disable).
+///
+/// Called during early boot to prevent SeaBIOS-configured LAPIC interrupts
+/// from firing before the driver sets up the interrupt root.  The LAPIC
+/// driver re-enables this bit in `x86_64_lapic_init`.
+#[inline]
+unsafe fn disable_lapic_msr() {
+    const IA32_APIC_BASE: u32 = 0x1B;
+    const APIC_DISABLE_BIT: u32 = 1 << 11;
+    let low: u32;
+    let high: u32;
+    // SAFETY: rdmsr is a ring-0 instruction; MSR 0x1B (IA32_APIC_BASE)
+    // is always available on x86_64 CPUs with an LAPIC.
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            out("eax") low,
+            out("edx") high,
+            in("ecx") IA32_APIC_BASE,
+        );
+    }
+    let val = ((high as u64) << 32) | (low as u64);
+    let disabled = val & !(APIC_DISABLE_BIT as u64);
+    let d_low = disabled as u32;
+    let d_high = (disabled >> 32) as u32;
+    // SAFETY: writes back the same MSR with bit 11 cleared.
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_APIC_BASE,
+            in("eax") d_low,
+            in("edx") d_high,
+        );
+    }
+}
+
 /// Kernel base address in the higher-half virtual address space.
 /// Physical address 0x0 maps to this virtual address via the identity
 /// and higher-half page tables built in `start.S`.
 const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
 
 /// Number of bytes needed for the kernel boot stack.
-const BOOT_STACK_SIZE: usize = 8 * 1024;
+const BOOT_STACK_SIZE: usize = 64 * 1024;
 
 unsafe extern "C" {
     static __init_pages_start: u8;
     static __image_start: u8;
     static __image_end: u8;
     /// Boot protocol EAX value saved by start.S (in .text, survives BSS zero).
-    /// 0x36d76289 = Multiboot2, 0 = PVH.
+    /// 0x36d76289 = Multiboot2, 0x2BADB009 = Multiboot1, 0 = PVH.
     static boot_eax: u32;
 }
 
@@ -111,6 +147,68 @@ const MBOOT_TAG_END: u32 = 0;
 
 /// Multiboot2 register magic — EAX value passed by GRUB on entry.
 const MB2_REG_MAGIC: u32 = 0x36d76289;
+
+/// Multiboot1 register magic — EAX value passed by QEMU `-kernel` on entry.
+const MB1_REG_MAGIC: u32 = 0x2BADB009;
+
+// ──────────────────────────────────────────────
+//  Multiboot1 info structure (flags-based format)
+// ──────────────────────────────────────────────
+
+/// Multiboot1 info header (at offset 0 of the info structure).
+///
+/// The `flags` field is a bitmask:
+/// - bit 0: mem_lower/mem_upper valid
+/// - bit 1: boot_device valid
+/// - bit 2: cmdline valid
+/// - bit 3: mods_count/mods_addr valid
+/// - bit 6: mmap_length/mmap_addr valid
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Mb1Info {
+    flags: u32,
+    mem_lower: u32,
+    mem_upper: u32,
+    boot_device: u32,
+    cmdline: u32,
+    mods_count: u32,
+    mods_addr: u32,
+    syms: [u32; 4],
+    mmap_length: u32,
+    mmap_addr: u32,
+}
+
+/// Multiboot1 info flags.
+const MB1_FLAG_MEMORY: u32 = 1 << 0;
+const MB1_FLAG_CMDLINE: u32 = 1 << 2;
+const MB1_FLAG_MODS: u32 = 1 << 3;
+const MB1_FLAG_MMAP: u32 = 1 << 6;
+
+/// Multiboot1 memory map entry (at `mmap_addr`).
+///
+/// The `size` field is the "size of this structure - 4"; it does NOT include
+/// the size field itself.  Advance by `size + 4` to reach the next entry.
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Mb1MmapEntry {
+    size: u32,
+    base_addr: u64,
+    length: u64,
+    typ: u32,
+}
+
+/// Multiboot1 module entry (at `mods_addr`).
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Mb1ModEntry {
+    mod_start: u32,
+    mod_end: u32,
+    cmdline: u32,
+    _reserved: u32,
+}
+
+/// Multiboot1 memory type: usable RAM.
+const MB1_MMAP_TYPE_AVAIL: u32 = 1;
 
 // ──────────────────────────────────────────────
 //  BSS statics for stage1 → stage2 handoff
@@ -456,6 +554,13 @@ unsafe fn parse_memory_map(info_phys: u64) -> Result<()> {
                     break;
                 }
 
+                // Clamp start to past the kernel image so the frame allocator
+                // doesn't allocate metadata on top of kernel code/data.
+                let image_end_page = {
+                    let e = unsafe { addr_of!(__image_end) as usize };
+                    (e + 0xFFF) & !0xFFF  // page-align up
+                };
+
                 let mut entry_off: u64 = 0;
                 loop {
                     let entry_addr = entries_base.wrapping_add(entry_off);
@@ -469,19 +574,28 @@ unsafe fn parse_memory_map(info_phys: u64) -> Result<()> {
                     let entry = unsafe { &*(entry_addr as *const MbootMmapEntry) };
 
                     if entry.typ == MBOOT_MMAP_TYPE_AVAIL && entry.length > 0 {
-                        let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
-                        if let Some(ref mut a) = *alloc {
-                            let region = PhysMemoryRegion::from_start_end_address(
-                                PA::from_value(entry.base_addr as usize),
-                                PA::from_value((entry.base_addr + entry.length) as usize),
-                            );
-                            if let Err(e) = a.add_memory(region) {
-                                log::warn!(
-                                    "mboot: failed to add RAM region at 0x{:x} ({} KiB): {}",
-                                    entry.base_addr,
-                                    entry.length / 1024,
-                                    e,
+                        // Clamp base to past the kernel image
+                        let base = core::cmp::max(entry.base_addr, image_end_page as u64);
+                        let end = entry.base_addr + entry.length;
+                        if base < end {
+                            let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
+                            if let Some(ref mut a) = *alloc {
+                                let region = PhysMemoryRegion::from_start_end_address(
+                                    PA::from_value(base as usize),
+                                    PA::from_value(end as usize),
                                 );
+                                log::warn!(
+                                    "mboot: MMAP region 0x{:x}–0x{:x} ({} KiB)",
+                                    base,
+                                    end,
+                                    (end - base) / 1024,
+                                );
+                                if let Err(e) = a.add_memory(region) {
+                                    log::warn!(
+                                        "mboot: failed to add RAM region: {}",
+                                        e,
+                                    );
+                                }
                             }
                         }
                     }
@@ -657,6 +771,194 @@ unsafe fn parse_modules(info_phys: u64) {
 }
 
 // ──────────────────────────────────────────────
+//  Multiboot1 info parsing (flags-based format)
+// ──────────────────────────────────────────────
+
+/// Read the Multiboot1 info header from a physical address.
+///
+/// Returns `None` if the physical address is NULL or the flags field is zero
+/// (which implies the structure is not a valid Multiboot1 info).
+///
+/// # Safety
+///
+/// `info_phys` must point to a valid Multiboot1 info structure mapped by the
+/// initial page tables.  Must only be called during single-threaded stage1.
+unsafe fn read_mb1_info(info_phys: u64) -> Option<Mb1Info> {
+    if info_phys == 0 {
+        return None;
+    }
+    let info_virt = info_phys.wrapping_add(KERNEL_BASE);
+    let info = unsafe { core::ptr::read(info_virt as *const Mb1Info) };
+    if info.flags == 0 {
+        return None;
+    }
+    Some(info)
+}
+
+/// Parse the Multiboot1 memory map and populate the physical frame allocator.
+///
+/// The memory map is at `info.mmap_addr` (physical) and consists of
+/// `Mb1MmapEntry` records.  Each record's `size` field is "size of this
+/// structure minus 4"; advance by `size + 4` to reach the next entry.
+///
+/// # Safety
+///
+/// Must be called once during single-threaded stage1 with a valid Multiboot1
+/// info structure.
+unsafe fn parse_mb1_memory_map(info_phys: u64) -> Result<()> {
+    let info_virt = info_phys.wrapping_add(KERNEL_BASE);
+    let info = unsafe { core::ptr::read(info_virt as *const Mb1Info) };
+
+    if info.flags & MB1_FLAG_MMAP == 0 {
+        log::warn!("mboot1: no memory map flag set, using fallback");
+        unsafe { init_pvh_memory() };
+        return Ok(());
+    }
+
+    let mmap_virt = (info.mmap_addr as u64).wrapping_add(KERNEL_BASE);
+    let mmap_end = mmap_virt + info.mmap_length as u64;
+
+    // Clamp start to past the kernel image so the frame allocator
+    // doesn't allocate metadata on top of kernel code/data.
+    let image_end_page = {
+        let e = unsafe { addr_of!(__image_end) as usize };
+        (e + 0xFFF) & !0xFFF // page-align up
+    };
+
+    let mut offset: u64 = 0;
+    loop {
+        let entry_addr = mmap_virt + offset;
+        if entry_addr + core::mem::size_of::<Mb1MmapEntry>() as u64 > mmap_end {
+            break;
+        }
+        let entry = unsafe { &*(entry_addr as *const Mb1MmapEntry) };
+
+        if entry.typ == MB1_MMAP_TYPE_AVAIL && entry.length > 0 {
+            // Clamp base to past the kernel image.
+            let base = core::cmp::max(entry.base_addr, image_end_page as u64);
+            let end = entry.base_addr + entry.length;
+            if base < end {
+                let mut alloc = INITAL_ALLOCATOR.lock_save_irq();
+                if let Some(ref mut a) = *alloc {
+                    let region = PhysMemoryRegion::from_start_end_address(
+                        PA::from_value(base as usize),
+                        PA::from_value(end as usize),
+                    );
+                    log::warn!(
+                        "mboot1: MMAP region 0x{:x}–0x{:x} ({} KiB)",
+                        base,
+                        end,
+                        (end - base) / 1024,
+                    );
+                    if let Err(e) = a.add_memory(region) {
+                        log::warn!("mboot1: failed to add RAM region: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Advance: size is "size of structure minus 4".
+        offset += entry.size as u64 + 4;
+    }
+
+    Ok(())
+}
+
+/// Parse Multiboot1 modules to find the initrd.
+///
+/// Module entries are at `info.mods_addr` (physical), `info.mods_count` entries
+/// of 16 bytes each.  The first module's physical address range is stored in
+/// `INITRD_START` / `INITRD_END`.
+///
+/// # Safety
+///
+/// Must be called once during single-threaded stage1 with a valid Multiboot1
+/// info structure.
+unsafe fn parse_mb1_modules(info_phys: u64) {
+    let info_virt = info_phys.wrapping_add(KERNEL_BASE);
+    let info = unsafe { core::ptr::read(info_virt as *const Mb1Info) };
+
+    if info.flags & MB1_FLAG_MODS == 0 || info.mods_count == 0 {
+        log::warn!("mboot1: no modules found");
+        return;
+    }
+
+    let mods_virt = (info.mods_addr as u64).wrapping_add(KERNEL_BASE);
+    let mods_end =
+        mods_virt + info.mods_count as u64 * core::mem::size_of::<Mb1ModEntry>() as u64;
+
+    let mut offset: u64 = 0;
+    while mods_virt + offset + core::mem::size_of::<Mb1ModEntry>() as u64 <= mods_end {
+        let entry = unsafe { &*((mods_virt + offset) as *const Mb1ModEntry) };
+        let mod_start = entry.mod_start as u64;
+        let mod_end = entry.mod_end as u64;
+
+        if mod_start > 0 && mod_end > mod_start {
+            // Store the first module as the initrd.
+            unsafe {
+                INITRD_START = mod_start;
+                INITRD_END = mod_end;
+            }
+
+            // Log module name (null-terminated string at cmdline pointer).
+            if entry.cmdline != 0 {
+                let name_virt = (entry.cmdline as u64).wrapping_add(KERNEL_BASE);
+                let name_bytes = unsafe {
+                    core::slice::from_raw_parts(name_virt as *const u8, 256)
+                };
+                let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(255);
+                if let Ok(name) = core::str::from_utf8(&name_bytes[..name_len]) {
+                    log::info!(
+                        "mboot1: module '{}' at 0x{:x}–0x{:x} ({} bytes)",
+                        name,
+                        mod_start,
+                        mod_end,
+                        mod_end - mod_start,
+                    );
+                }
+            }
+        }
+        offset += core::mem::size_of::<Mb1ModEntry>() as u64;
+    }
+}
+
+/// Copy the command line from a Multiboot1 info structure into the BSS
+/// static `BOOT_CMDLINE` so it survives the stage1 → stage2 transition.
+///
+/// # Safety
+///
+/// `info_phys` must point to a valid Multiboot1 info structure mapped by the
+/// initial page tables.  Must be called before the boot stack is reclaimed.
+///
+/// # Returns
+///
+/// `true` if a non-empty command line was stored.
+unsafe fn store_mb1_cmdline(info_phys: u64) -> bool {
+    let info_virt = info_phys.wrapping_add(KERNEL_BASE);
+    let info = unsafe { core::ptr::read(info_virt as *const Mb1Info) };
+
+    if info.flags & MB1_FLAG_CMDLINE == 0 || info.cmdline == 0 {
+        return false;
+    }
+
+    let str_virt = (info.cmdline as u64).wrapping_add(KERNEL_BASE);
+    let bytes = unsafe { core::slice::from_raw_parts(str_virt as *const u8, 256) };
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(255);
+
+    if len == 0 || len >= BOOT_CMDLINE_MAX {
+        return false;
+    }
+
+    unsafe {
+        let dst = addr_of_mut!(BOOT_CMDLINE) as *mut u8;
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len);
+        *dst.add(len) = 0;
+        *addr_of_mut!(BOOT_CMDLINE_LEN) = len;
+    }
+    true
+}
+
+// ──────────────────────────────────────────────
 //  Arch init entry points (called from start.S)
 // ──────────────────────────────────────────────
 
@@ -687,25 +989,36 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
     boot_diag(b'A'); // 'A' — logger set up
 
     // Detect boot protocol: boot_eax was saved by start.S before BSS zero.
-    // 0x36d76289 = Multiboot2 (GRUB), 0 = PVH (QEMU -kernel).
-    let is_pvh = unsafe { boot_eax } != MB2_REG_MAGIC;
+    // 0x36d76289 = Multiboot2 (GRUB), 0x2BADB009 = Multiboot1 (QEMU -kernel),
+    // 0 = PVH (QEMU -kernel with ELF).
+    let boot_eax_val = unsafe { boot_eax };
 
-    if is_pvh {
-        // ---- PVH boot path (QEMU -kernel with ELF) ----
-        log::info!("moss: x86_64 boot (PVH/QEMU)");
-        boot_diag(b'P'); // 'P' — PVH path
+    if boot_eax_val == MB1_REG_MAGIC {
+        // ---- Multiboot1 boot path (QEMU -kernel) ----
+        log::info!("moss: x86_64 boot (Multiboot1/QEMU)");
+        boot_diag(b'M'); // 'M' — Multiboot1 path
 
-        // Parse hvm_start_info: extract initrd, cmdline, and memory map.
-        // mboot_info_ptr contains the hvm_start_info physical address from EBX.
-        if mboot_info_ptr != 0 {
-            unsafe { init_pvh_boot_info(mboot_info_ptr) };
-        } else {
-            // PVH but no start_info — shouldn't happen with modern QEMU.
-            log::warn!("moss: PVH but hvm_start_info is NULL, using fallback");
-            unsafe { init_pvh_memory() };
+        // Store the command line into BSS for stage2 access.
+        if unsafe { store_mb1_cmdline(mboot_info_ptr) } {
+            let len = unsafe { BOOT_CMDLINE_LEN };
+            let bytes = unsafe { &BOOT_CMDLINE[..len] };
+            if let Ok(cmd) = core::str::from_utf8(bytes) {
+                log::info!("moss: boot cmdline: {}", cmd);
+            }
         }
-        boot_diag(b'M'); // 'M' — memory init done
-    } else {
+        boot_diag(b'C'); // 'C' — cmdline parsed
+
+        // Parse Multiboot1 modules — extract initrd physical address range.
+        unsafe { parse_mb1_modules(mboot_info_ptr) };
+        boot_diag(b'K'); // 'K' — modules parsed
+
+        // Set up physical frame allocator from Multiboot1 memory map.
+        unsafe {
+            parse_mb1_memory_map(mboot_info_ptr)
+                .expect("parse_mb1_memory_map: failed to initialise frame allocator");
+        }
+        boot_diag(b'F'); // 'F' — frame allocator done
+    } else if boot_eax_val == MB2_REG_MAGIC {
         // ---- Multiboot2 boot path (GRUB) ----
         log::info!("moss: x86_64 boot (Multiboot2)");
         boot_diag(b'B'); // 'B' — Multiboot2 path
@@ -733,6 +1046,21 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
                 .expect("parse_memory_map: failed to initialise frame allocator");
         }
         boot_diag(b'F'); // 'F' — frame allocator done
+    } else {
+        // ---- PVH boot path (QEMU -kernel with ELF) ----
+        log::info!("moss: x86_64 boot (PVH/QEMU)");
+        boot_diag(b'P'); // 'P' — PVH path
+
+        // Parse hvm_start_info: extract initrd, cmdline, and memory map.
+        // mboot_info_ptr contains the hvm_start_info physical address from EBX.
+        if mboot_info_ptr != 0 {
+            unsafe { init_pvh_boot_info(mboot_info_ptr) };
+        } else {
+            // PVH but no start_info — shouldn't happen with modern QEMU.
+            log::warn!("moss: PVH but hvm_start_info is NULL, using fallback");
+            unsafe { init_pvh_memory() };
+        }
+        boot_diag(b'M'); // 'M' — memory init done
     }
 
     boot_diag(b'S'); // 'S' — setting up kern addr space
@@ -740,7 +1068,7 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
     // Set up the kernel address space using the page tables built in start.S.
     // SAFETY: __init_pages_start is an extern static defined in start.S, valid
     // during stage1 after page tables are constructed.
-    let init_pages_pa = unsafe { TPA::from_value(__init_pages_start as usize) };
+    let init_pages_pa = unsafe { TPA::from_value(addr_of!(__init_pages_start) as usize) };
     setup_kern_addr_space(init_pages_pa).expect("setup_kern_addr_space failed");
     boot_diag(b'A'); // 'A' — kern addr space done (was 'K' to avoid clash with modules)
 
@@ -769,7 +1097,7 @@ unsafe extern "C" fn arch_init_stage1(mboot_info_ptr: u64) -> u64 {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn arch_init_stage2() {
     boot_diag(b'a'); // 'a' — stage2 entry
-    log::info!("moss: stage2 — x86_64 early init");
+    boot_diag(b'A'); // 'A' — about to take INITAL_ALLOCATOR
 
     // Initialize the frame allocator from the early bootstrap allocator
     // (mirrors ARM64 arch_init_stage2 flow).
@@ -777,27 +1105,71 @@ unsafe extern "C" fn arch_init_stage2() {
         .lock_save_irq()
         .take()
         .expect("INITAL_ALLOCATOR already consumed");
+    boot_diag(b'B'); // 'B' — smalloc taken
     // SAFETY: FrameAllocator::init is safe to call here — we are in single-threaded
     // stage-2 init with exclusive ownership of `smalloc` and no other CPU is active.
     let (page_alloc, frame_list) = unsafe { crate::memory::FrameAllocator::init(smalloc) };
+    boot_diag(b'C'); // 'C' — FrameAllocator::init done
     crate::memory::PAGE_ALLOC
         .set(page_alloc)
         .unwrap_or_else(|_| panic!("PAGE_ALLOC already set"));
     super::memory::heap::SLAB_ALLOC
         .set(libkernel::memory::allocators::slab::allocator::SlabAllocator::new(frame_list))
         .unwrap_or_else(|_| panic!("SLAB_ALLOC already set"));
-    super::memory::heap::KernelHeap::init_for_this_cpu();
-    boot_diag(b'b'); // 'b' — heap + frame allocator done
+    boot_diag(b'b'); // 'b' — slab allocator set
 
     // Initialize exceptions: IDT + syscall entry (Issue #16).
     crate::arch::x86_64::exceptions::exceptions_init().expect("exceptions init failed");
     boot_diag(b'c'); // 'c' — exceptions (IDT) done
+
+    // Mask all 8259 PIC interrupts before enabling interrupts.
+    // SeaBIOS leaves the legacy 8259 PIC active with its default mapping
+    // (IRQ0→vector 0x08, etc.), which overlaps CPU exception vectors.
+    // The LAPIC/I/O APIC drivers (loaded in run_initcalls) will take over
+    // interrupt delivery.  Masking here prevents the stale 8259 PIC from
+    // firing vectors that conflict with our IDT (e.g., IRQ0→#DF with IST1).
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",  // master PIC mask (port 0x21)
+            in("dx") 0x21u16,
+            in("al") 0xFFu8,
+        );
+        core::arch::asm!(
+            "out dx, al",  // slave PIC mask (port 0xA1)
+            in("dx") 0xA1u16,
+            in("al") 0xFFu8,
+        );
+    }
+    boot_diag(b'P'); // 'P' — PIC masked
+
+    // Initialize the per-CPU heap (sets IA32_GS_BASE MSR to point at the
+    // per-CPU SlabCache).  This MUST happen after exceptions_init() because
+    // setup_boot_gdt_tss() clears the GS segment selector (mov gs, ax=0),
+    // which in some environments can interfere with the MSR.  We also need
+    // this before enable_interrupts() and run_initcalls() because every
+    // allocation goes through the slab cache via GS.
+    super::memory::heap::KernelHeap::init_for_this_cpu();
+    boot_diag(b'g'); // 'g' — per-cpu heap (GS base) set
+
+    // Disable the local APIC before enabling interrupts.
+    // SeaBIOS leaves the LAPIC in an unknown state — it may have LINT0/LINT1
+    // configured to deliver interrupts, or pending vectors.  If an IRQ fires
+    // before the LAPIC driver in run_initcalls() sets up the interrupt root,
+    // the handler panics (no root controller) and the panic path itself
+    // triple-faults.
+    //
+    // We clear bit 11 (APIC Software Disable) in IA32_APIC_BASE MSR (0x1B).
+    // The x86_64_lapic_init driver will re-enable it later by setting this
+    // bit and configuring all LVT entries.
+    unsafe { disable_lapic_msr(); }
+    boot_diag(b'z'); // 'z' — LAPIC disabled via MSR
 
     // Enable hardware interrupts so that driver IRQ handlers can fire.
     // Must happen before run_initcalls() so that interrupt-driven drivers
     // can claim their IRQs.
     ArchImpl::enable_interrupts();
     boot_diag(b'd'); // 'd' — interrupts enabled
+    boot_diag(b'R'); // 'R' — about to call run_initcalls()
 
     // Run all kernel_driver! init functions (LAPIC, I/O APIC, UART, HPET,
     // LAPIC timer, etc.).  The LAPIC init must link first so that the

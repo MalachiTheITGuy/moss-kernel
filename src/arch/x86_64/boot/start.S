@@ -19,7 +19,9 @@
  * works identically at both physical and virtual addresses.
  */
 
-/* ---- Multiboot2 constants ---- */
+/* ---- Multiboot constants ---- */
+#define MB1_MAGIC    0x1BADB002
+#define MB1_REG_MAGIC 0x2BADB009
 #define MB2_MAGIC    0xe85250d6
 #define MB2_REG_MAGIC 0x36d76289
 #define MB2_ARCH_i386 0
@@ -53,7 +55,7 @@
 .section .note.Xen, "a", @note
 .align 4
     .long   4                                   /* namesz: "Xen\0"             */
-    .long   24                                  /* descsz: pv_info struct      */
+    .long   36                                  /* descsz: v2 struct (36B)     */
     .long   0x12                                /* type: XEN_ELFNOTE_PV_INFO  */
     .asciz  "Xen"                               /* name                        */
     .align 4
@@ -80,10 +82,19 @@ mb2_header:
     .long   8                                  /* size of this tag           */
 mb2_header_end:
 
+/* ---------- Multiboot1 header (must be within first 8 KiB) ---------- */
+.section .text.boot._start, "ax", @progbits
+.align 4
+mb1_header:
+    .long   MB1_MAGIC                          /* magic                      */
+    .long   0                                  /* flags: no special requests */
+    .long   -(MB1_MAGIC + 0)                   /* checksum                   */
+
 /* ---- Saved boot EAX for protocol detection in Rust ----
  * Placed in .text (not .bss) so it survives BSS zeroing. */
 .section .text.boot._start, "ax", @progbits
 .align 4
+.globl boot_eax
 boot_eax:
     .space 4
 
@@ -114,6 +125,7 @@ _start:
     movl    %eax, (boot_eax)
 
     /* ---- 1. Detect boot protocol ----
+     * Multiboot1: EAX = 0x2BADB009, EBX = info pointer (QEMU -kernel)
      * Multiboot2: EAX = 0x36d76289, EBX = info pointer
      * PVH (Xen):  EAX = 0, EBX = hvm_start_info pointer
      *             QEMU uses PVH when loading ELF with -kernel flag.
@@ -121,10 +133,15 @@ _start:
      * EBX is callee-saved and survives the BSS zero that follows. */
     cmpl    $MB2_REG_MAGIC, %eax
     je      .Lmb2_boot
-    /* Not Multiboot2 — check for PVH entry (EAX must be 0) */
+    cmpl    $MB1_REG_MAGIC, %eax
+    je      .Lmb1_boot
+    /* Not Multiboot1/2 — check for PVH entry (EAX must be 0) */
     testl   %eax, %eax
     jnz     .Lhang              /* unknown entry, hang */
     /* PVH: EBX = hvm_start_info pointer — keep as-is for Rust parsing. */
+    jmp     .Lboot_common
+.Lmb1_boot:
+    /* Multiboot1: EBX = info pointer — keep as-is for Rust parsing. */
     jmp     .Lboot_common
 .Lmb2_boot:
     /* Multiboot2: EBX = Multiboot2 info pointer — keep as-is. */
@@ -139,6 +156,11 @@ _start:
     cld
     rep stosl
 
+    /* Debug: 'B' = BSS zero done */
+    movb    $0x42, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
+
     /* ---- Save multiboot info pointer (now that BSS is clean) ---- */
     movl    %ebx, (mboot_info_ptr)
 
@@ -150,16 +172,18 @@ _start:
      *   +0x2000  PDPT_kh    (4 KiB) — higher-half PDPT (entry 510)
      *   +0x3000  PD_id      (4 KiB) — identity-map PD (2 MiB large pages)
      *   +0x4000  PD_kh      (4 KiB) — higher-half PD (2 MiB large pages)
+     *   +0x5000  PDPT_dm    (4 KiB) — direct-map PDPT (entry 0)
+     *   +0x6000  PD_dm      (4 KiB) — direct-map PD (2 MiB large pages)
      *
      * Uses 2 MiB large pages (PSE) so no separate page tables are needed.
      * Each PD entry with PS bit set maps a 2 MiB aligned physical range.
      *
-     * PML4[0]   → PDPT_id → PD_id  (identity: phys 0x000000–0x1FFFFFF)
-     * PML4[511] → PDPT_kh → PD_kh  (higher-half: phys 0x000000–0x1FFFFFF)
+     * PML4[0]   → PDPT_id → PD_id  (identity: phys 0–32 MiB)
+     * PML4[273] → PDPT_dm → PD_dm  (direct map: phys 0–512 MiB at PAGE_OFFSET)
+     * PML4[511] → PDPT_kh → PD_kh  (higher-half: phys 0–32 MiB)
      *
-     * Higher-half virtual 0xFFFFFFFF80000000 = PML4[511], PDPT[510], PD[0]
-     * We map 16 PD entries × 2 MiB = 32 MiB, covering the entire kernel
-     * image, init pages, and boot stack.
+     * PAGE_OFFSET = 0xFFFF888000000000 = PML4[273], PDPT[0], PD[0]
+     * Direct map covers 256 × 2 MiB = 512 MiB, sufficient for -m 512M.
      */
 
     movl    $__init_pages_start, %esi   /* ESI = PML4 base             */
@@ -190,6 +214,11 @@ _start:
     lea     0x4000(%esi), %eax
     orl     $PTE_RW_P, %eax
     movl    %eax, 0x2FF0(%esi)           /* PDPT_kh entry 510 (0x2000+0xFF0) */
+
+    /* Debug: 'T' = page tables done */
+    movb    $0x54, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
 
     /*
      * Fill PD_id and PD_kh with 2 MiB large-page (PSE) entries.
@@ -227,6 +256,39 @@ _start:
     decl    %edx
     jnz     .Lfill_pd_kh
 
+    /* -- PML4[273] → PDPT_dm (direct map at PAGE_OFFSET) --
+     *
+     * PAGE_OFFSET = 0xFFFF888000000000 decodes to PML4[273], PDPT[0].
+     * PML4 index 273 = byte offset 273*8 = 0x888 within PML4.
+     */
+    lea     0x5000(%esi), %eax            /* PDPT_dm phys addr           */
+    orl     $PTE_RW_P, %eax
+    movl    %eax, 0x888(%esi)            /* PML4 entry 273              */
+
+    /* -- PDPT_dm[0] → PD_dm -- */
+    lea     0x6000(%esi), %eax            /* PD_dm phys addr             */
+    orl     $PTE_RW_P, %eax
+    movl    %eax, 0x5000(%esi)           /* PDPT_dm entry 0             */
+
+    /* -- PD_dm: direct-map 512 MiB (256 × 2 MiB entries) -- */
+    movl    $(0x03 | 0x80), %ecx        /* ECX = PSE_LARGE_PTE          */
+    movl    $(__init_pages_start + 0x6000), %edi
+    movl    $0x00000000, %eax            /* first 2 MiB base             */
+    movl    $256, %edx                   /* 256 entries = 512 MiB        */
+.Lfill_pd_dm:
+    movl    %eax, %ebx
+    orl     %ecx, %ebx                  /* PSE_LARGE_PTE                */
+    movl    %ebx, (%edi)
+    addl    $0x200000, %eax             /* next 2 MiB base              */
+    addl    $8, %edi                     /* next PDE slot                */
+    decl    %edx
+    jnz     .Lfill_pd_dm
+
+    /* Debug: 'D' = direct-map done */
+    movb    $0x44, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
+
     /* ---- 4. Enable PAE + Long Mode + Paging ---- */
 
     /* CR3 = PML4 physical address */
@@ -251,12 +313,22 @@ _start:
     orl     $(1 << 31), %eax
     movl    %eax, %cr0
 
+    /* Debug: 'P' = paging enabled */
+    movb    $0x50, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
+
     /* ---- 5. Load GDT (identity-mapped via .text.boot) ----
      * The GDT lives in .text.boot at physical address 0x100000+N,
      * which is identity-mapped.  We must load it BEFORE the far
      * jump because SEL_CODE64 (0x08) must resolve through a valid
      * GDT. */
     lgdt    boot_gdt_desc
+
+    /* Debug: 'G' = GDT loaded */
+    movb    $0x47, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
 
     /* ---- 6. Far jump to 64-bit code segment ----
      * Loads CS with SEL_CODE64 (a 64-bit code descriptor) and
