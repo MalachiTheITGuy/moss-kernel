@@ -300,10 +300,13 @@ _start:
     orl     $(1 << 5), %eax
     movl    %eax, %cr4
 
-    /* EFER.LME (bit 8) = 1 — enables long mode */
+    /* EFER.LME (bit 8) = 1 — enables long mode.
+     * EFER.NXE (bit 11) = 1 — enables No-Execute bit in PTEs.
+     * Without NXE, bit 63 of any PTE is treated as a reserved bit,
+     * causing reserved-bit page faults when accessing NX-mapped pages. */
     movl    $0xC0000080, %ecx
     rdmsr
-    orl     $(1 << 8), %eax
+    orl     $(1 << 8 | 1 << 11), %eax
     wrmsr
 
     /* CR0.PG (bit 31) = 1 — enable paging.
@@ -354,15 +357,6 @@ long_mode_start:
     movb    $0x4C, %al          /* 'L' = long mode */
     movw    $0xe9, %dx
     outb    %al, %dx
-    /* Also write to COM1 */
-    movw    $0x3F8+5, %dx
-.Lwait_uart_long:
-    inb     %dx, %al
-    testb   $0x20, %al
-    jz      .Lwait_uart_long
-    movb    $0x4C, %al          /* 'L' = long mode */
-    movw    $0x3F8, %dx
-    outb    %al, %dx
 
     /* ---- 7. Set up boot stack ----
      * __boot_stack is at a physical address (linked at PHYS_BASE).
@@ -380,18 +374,25 @@ long_mode_start:
     movb    $0x43, %al          /* 'C' = calling stage1 */
     movw    $0xe9, %dx
     outb    %al, %dx
-    /* Also write to COM1 */
-    movw    $0x3F8+5, %dx
-.Lwait_uart_call:
-    inb     %dx, %al
-    testb   $0x20, %al
-    jz      .Lwait_uart_call
-    movb    $0x43, %al          /* 'C' = calling stage1 */
-    movw    $0x3F8, %dx
+
+    /* 'K' = about to load mboot_info_ptr */
+    movb    $0x4B, %al
+    movw    $0xe9, %dx
     outb    %al, %dx
 
     movq    (mboot_info_ptr), %rdi
+
+    /* 'J' = about to call arch_init_stage1 */
+    movb    $0x4A, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
+
     call    arch_init_stage1
+
+    /* 'R' = returned from arch_init_stage1 */
+    movb    $0x52, %al
+    movw    $0xe9, %dx
+    outb    %al, %dx
 
     /* RAX = new stack pointer from stage 1 (higher-half stack) */
     movq    %rax, %rsp
