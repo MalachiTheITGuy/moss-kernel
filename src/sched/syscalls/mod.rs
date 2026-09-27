@@ -1,7 +1,7 @@
 use crate::arch::{Arch, ArchImpl};
 use crate::process::thread_group::pid::PidT;
-use crate::sched::syscall_ctx::ProcessCtx;
 use crate::sched::schedule;
+use crate::sched::syscall_ctx::ProcessCtx;
 
 pub fn sys_sched_yield() -> libkernel::error::Result<usize> {
     schedule();
@@ -14,7 +14,9 @@ pub fn sys_sched_getaffinity(
     _size: usize,
     _mask: libkernel::memory::address::UA,
 ) -> libkernel::error::Result<usize> {
-    Err(libkernel::error::KernelError::Other("sched_getaffinity not implemented"))
+    Err(libkernel::error::KernelError::Other(
+        "sched_getaffinity not implemented",
+    ))
 }
 
 pub fn sys_sched_setaffinity(
@@ -23,5 +25,7 @@ pub fn sys_sched_setaffinity(
     _size: usize,
     _mask: libkernel::memory::address::UA,
 ) -> libkernel::error::Result<usize> {
-    Err(libkernel::error::KernelError::Other("sched_setaffinity not implemented"))
+    Err(libkernel::error::KernelError::Other(
+        "sched_setaffinity not implemented",
+    ))
 }

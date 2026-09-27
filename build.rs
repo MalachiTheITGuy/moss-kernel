@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use time::macros::format_description;
 use time::OffsetDateTime;
+use time::macros::format_description;
 
 fn main() {
     let linker_script = match std::env::var("CARGO_CFG_TARGET_ARCH") {

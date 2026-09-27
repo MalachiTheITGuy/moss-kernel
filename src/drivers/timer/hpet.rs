@@ -21,13 +21,13 @@ use libkernel::memory::proc_vm::address_space::{KernAddressSpace, VirtualMemory}
 use crate::{
     arch::ArchImpl,
     drivers::{
-        init::PlatformBus,
-        timer::{HwTimer, Instant, SysTimer, SYS_TIMER},
         Driver, DriverManager,
+        init::PlatformBus,
+        timer::{HwTimer, Instant, SYS_TIMER, SysTimer},
     },
     interrupts::{
-        get_interrupt_root, ClaimedInterrupt, InterruptConfig, InterruptDescriptor,
-        InterruptManager, TriggerMode,
+        ClaimedInterrupt, InterruptConfig, InterruptDescriptor, InterruptManager, TriggerMode,
+        get_interrupt_root,
     },
     kernel_driver,
     sync::SpinLock,
@@ -250,8 +250,7 @@ pub fn x86_64_hpet_init(_bus: &mut PlatformBus, _dm: &mut DriverManager) -> Resu
     let sys_timer = interrupt_manager.claim_interrupt(timer_config, |claimed| {
         // SAFETY: `hpet_va` was mapped above and is valid for
         // the lifetime of this driver.
-        let regs: &mut HpetRegs =
-            unsafe { &mut *(hpet_va.value() as *mut HpetRegs) };
+        let regs: &mut HpetRegs = unsafe { &mut *(hpet_va.value() as *mut HpetRegs) };
 
         // Configure the hardware before wrapping in Arc.
         // Enable the global HPET counter.

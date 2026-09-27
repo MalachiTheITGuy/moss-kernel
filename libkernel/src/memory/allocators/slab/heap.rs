@@ -85,16 +85,25 @@ where
 
     /// Initializes the per-CPU slab cache for the current CPU.
     pub fn init_for_this_cpu() {
+        // Diagnostic: write to debugcon port 0xE9
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'q', options(nostack)); }
+
         let page: ClaimedPage<CPU, PG, T> =
             ClaimedPage::alloc_zeroed().expect("Cannot allocate heap page");
+
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'r', options(nostack)); }
 
         // SAFETY: We just successfully allocated the above page and the
         // lifetime of the returned pointer will be for the entire lifetime of
         // the kernel ('sttaic).
         let slab_cache = unsafe { SlabCache::from_page(page) };
 
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b's', options(nostack)); }
+
         // Store the slab_cache pointer in the storage.
         S::store(slab_cache);
+
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b't', options(nostack)); }
     }
 }
 

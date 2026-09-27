@@ -33,10 +33,10 @@ use tock_registers::{
 
 use crate::{
     arch::ArchImpl,
-    drivers::{init::PlatformBus, Driver, DriverManager},
+    drivers::{Driver, DriverManager, init::PlatformBus},
     interrupts::{
-        set_interrupt_root, InterruptConfig, InterruptContext, InterruptController,
-        InterruptDescriptor, InterruptManager,
+        InterruptConfig, InterruptContext, InterruptController, InterruptDescriptor,
+        InterruptManager, set_interrupt_root,
     },
     kernel_driver,
     sync::SpinLock,
@@ -439,6 +439,31 @@ impl InterruptController for X86_64Lapic {
 /// LAPIC driver is set up directly here rather than through the platform
 /// bus probe mechanism.
 pub fn x86_64_lapic_init(_bus: &mut PlatformBus, dm: &mut DriverManager) -> Result<()> {
+    // 0. Re-enable the LAPIC in IA32_APIC_BASE MSR.
+    //    Boot code cleared bit 11 (APIC Software Disable) to prevent
+    //    stale BIOS-configured interrupts before the driver was ready.
+    //    We must re-enable it here before any MMIO writes take effect.
+    unsafe {
+        const IA32_APIC_BASE: u32 = 0x1B;
+        const APIC_DISABLE: u64 = 1 << 11;
+        let low: u32;
+        let high: u32;
+        core::arch::asm!(
+            "rdmsr",
+            out("eax") low,
+            out("edx") high,
+            in("ecx") IA32_APIC_BASE,
+        );
+        let base = ((high as u64) << 32) | (low as u64);
+        let enabled = base | APIC_DISABLE;
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") IA32_APIC_BASE,
+            in("eax") enabled as u32,
+            in("edx") (enabled >> 32) as u32,
+        );
+    }
+
     // 1. Map the LAPIC MMIO region.
     let lapic_va = {
         let addr_spc = <ArchImpl as VirtualMemory>::kern_address_space();

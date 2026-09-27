@@ -1,6 +1,6 @@
-use super::{Driver, DriverManager};
 #[cfg(target_arch = "aarch64")]
 use super::probe::{DeviceDescriptor, DeviceMatchType, ProbeFn};
+use super::{Driver, DriverManager};
 use crate::{drivers::DM, sync::SpinLock};
 use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use libkernel::error::{KernelError, ProbeError, Result};
@@ -84,6 +84,7 @@ impl PlatformBus {
 ///
 /// SAFETY: The function should only be called once during boot.
 pub unsafe fn run_initcalls() {
+    crate::arch::x86_64::boot::boot_diag(b'R'); // 'R' — run_initcalls entered
     unsafe extern "C" {
         static __driver_inits_start: u8;
         static __driver_inits_end: u8;
@@ -93,18 +94,28 @@ pub unsafe fn run_initcalls() {
         let start = &__driver_inits_start as *const _ as *const InitFunc;
         let end = &__driver_inits_end as *const _ as *const InitFunc;
         let mut current = start;
+        let mut idx: u8 = 0;
 
+        // Debug: emit 'X' before taking PLATFORM_BUS lock
+        crate::arch::x86_64::boot::boot_diag(b'X');
         let mut bus = PLATFORM_BUS.lock_save_irq();
+        // Debug: emit 'Y' before taking DM lock
+        crate::arch::x86_64::boot::boot_diag(b'Y');
         let mut dm = DM.lock_save_irq();
+        // Debug: emit 'Z' before entering the loop
+        crate::arch::x86_64::boot::boot_diag(b'Z');
 
         while current < end {
             let init_func = &*current;
+            // Debug: emit a letter before each driver init
+            crate::arch::x86_64::boot::boot_diag(b'I' + idx);
             // Call each driver's init function
             if let Err(e) = init_func(&mut bus, &mut dm) {
                 error!("A driver failed to initialize: {e}");
             }
 
             current = current.add(1);
+            idx += 1;
         }
     }
 }

@@ -6,7 +6,7 @@
 use super::super::cpu_ops::X86_64InterruptFlags;
 use crate::{
     arch::ArchImpl,
-    memory::{page::PgAllocGetter, PageOffsetTranslator},
+    memory::{PageOffsetTranslator, page::PgAllocGetter},
     sync::OnceLock,
 };
 use core::{
@@ -14,12 +14,12 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use libkernel::{
+    CpuOps,
     memory::allocators::slab::{
         allocator::SlabAllocator,
         cache::SlabCache,
         heap::{KHeap, SlabCacheStorage, SlabGetter},
     },
-    CpuOps,
 };
 
 type SlabAlloc = SlabAllocator<ArchImpl, PgAllocGetter, PageOffsetTranslator>;

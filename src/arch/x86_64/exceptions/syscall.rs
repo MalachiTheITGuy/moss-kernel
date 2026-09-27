@@ -1,12 +1,125 @@
 //! x86_64 system call handling.
 //!
 //! syscall/sysret fast path for Linux ABI-compliant system calls.
+//! The `handle_syscall` async function is the main dispatch, mirroring
+//! the ARM64 implementation in `arch/arm64/exceptions/syscall.rs`.
 
 use core::arch::asm;
 
 use log::info;
 
-use super::ExceptionState;
+use crate::{
+    clock::syscalls::{
+        gettime::sys_clock_gettime,
+        itimer::{sys_getitimer, sys_setitimer},
+        settime::sys_clock_settime,
+        timeofday::sys_gettimeofday,
+    },
+    fs::{
+        dir::sys_getdents64,
+        memfd::sys_memfd_create,
+        pipe::sys_pipe2,
+        syscalls::{
+            at::{
+                access::{sys_faccessat, sys_faccessat2},
+                chmod::sys_fchmodat,
+                chown::sys_fchownat,
+                link::sys_linkat,
+                mkdir::sys_mkdirat,
+                open::sys_openat,
+                readlink::sys_readlinkat,
+                rename::{sys_renameat, sys_renameat2},
+                stat::sys_newfstatat,
+                statx::sys_statx,
+                symlink::sys_symlinkat,
+                unlink::sys_unlinkat,
+                utime::sys_utimensat,
+            },
+            chdir::{sys_chdir, sys_chroot, sys_fchdir, sys_getcwd},
+            chmod::sys_fchmod,
+            chown::sys_fchown,
+            close::{sys_close, sys_close_range},
+            copy_file_range::sys_copy_file_range,
+            ioctl::sys_ioctl,
+            iov::{sys_preadv, sys_preadv2, sys_pwritev, sys_pwritev2, sys_readv, sys_writev},
+            mount::sys_mount,
+            rw::{sys_pread64, sys_pwrite64, sys_read, sys_write},
+            seek::sys_lseek,
+            splice::sys_sendfile,
+            statfs::{sys_fstatfs, sys_statfs},
+            sync::sys_syncfs,
+            trunc::sys_ftruncate,
+        },
+    },
+    kernel::{
+        hostname::sys_sethostname, power::sys_reboot, rand::sys_getrandom, sysinfo::sys_sysinfo,
+        uname::sys_uname,
+    },
+    memory::{
+        brk::sys_brk,
+        mincore::sys_mincore,
+        mmap::{sys_mmap, sys_mprotect, sys_mremap, sys_munmap},
+        process_vm::sys_process_vm_readv,
+    },
+    net::syscalls::{
+        accept::{sys_accept, sys_accept4},
+        bind::sys_bind,
+        connect::sys_connect,
+        listen::sys_listen,
+        recv::sys_recvfrom,
+        send::sys_sendto,
+        shutdown::sys_shutdown,
+        socket::sys_socket,
+    },
+    process::{
+        caps::{sys_capget, sys_capset},
+        clone::sys_clone,
+        creds::{
+            sys_getegid, sys_geteuid, sys_getgid, sys_gettid, sys_getuid, sys_setfsgid,
+            sys_setfsuid, sys_setgid, sys_setregid, sys_setresgid, sys_setresuid, sys_setreuid,
+            sys_setuid,
+        },
+        epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait},
+        exec::sys_execve,
+        exit::{sys_exit, sys_exit_group},
+        fd_table::{
+            dup::{sys_dup, sys_dup3},
+            fcntl::sys_fcntl,
+            select::{sys_ppoll, sys_pselect6},
+        },
+        inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
+        pidfd::sys_pidfd_open,
+        prctl::sys_prctl,
+        ptrace::{TracePoint, ptrace_stop, sys_ptrace},
+        sleep::{sys_clock_nanosleep, sys_nanosleep},
+        thread_group::{
+            Pgid,
+            pid::{sys_getpgid, sys_getpid, sys_getppid, sys_setpgid},
+            rsrc_lim::sys_prlimit64,
+            signal::{
+                kill::{sys_kill, sys_tkill},
+                sigaction::sys_rt_sigaction,
+                sigaltstack::sys_sigaltstack,
+                signalfd::sys_signalfd4,
+                sigprocmask::sys_rt_sigprocmask,
+            },
+            umask::sys_umask,
+            wait::{sys_wait4, sys_waitid},
+        },
+        threading::{futex::sys_futex, sys_set_robust_list, sys_set_tid_address},
+    },
+    sched::{
+        self,
+        sched_task::state::TaskState,
+        syscalls::{sys_sched_getaffinity, sys_sched_setaffinity, sys_sched_yield},
+    },
+};
+use libkernel::{
+    error::syscall_error::kern_err_to_syscall,
+    memory::address::{TUA, UA, VA},
+};
+
+use crate::sched::syscall_ctx::ProcessCtx;
 
 // ---------------------------------------------------------------------------
 // MSR constants (Intel SDM Vol. 3, Table 2-2)
@@ -29,12 +142,6 @@ const EFER_SCE: u64 = 1;
 
 // ---------------------------------------------------------------------------
 // Segment selector constants
-//
-// These match the GDT layout in `boot/gdt.rs` and the Linux ABI:
-//   Index 1 (0x08) = kernel code  (DPL=0)
-//   Index 2 (0x10) = kernel data  (DPL=0)
-//   Index 5 (0x2B) = user data    (DPL=3, RPL=3)
-//   Index 6 (0x33) = user code    (DPL=3, RPL=3)
 // ---------------------------------------------------------------------------
 
 /// Kernel code segment selector — GDT entry 1, DPL 0.
@@ -50,15 +157,6 @@ const USER_CS: u64 = 0x33;
 const USER_SS: u64 = 0x2B;
 
 /// STAR MSR value encoding CS/SS selectors for SYSCALL and SYSRET.
-///
-/// Layout (Intel SDM Vol. 3, 2.8.1):
-///   Bits [15:0]  = target CS  (loaded from STAR[47:32] + 16 on SYSCALL)
-///   Bits [31:16] = target SS  (loaded from STAR[47:32] + 24 on SYSCALL)
-///   Bits [47:32] = Syscall CS (user CS when entering kernel)
-///   Bits [63:48] = Syscall SS (user SS when entering kernel)
-///
-/// For SYSCALL:  CS = STAR[47:32], SS = STAR[47:32] + 8
-/// For SYSRET:   CS = STAR[31:16] + 16, SS = STAR[31:16] + 8
 fn star_msr_value() -> u64 {
     (USER_SS << 48) | (USER_CS << 32) | (KERNEL_SS << 16) | KERNEL_CS
 }
@@ -109,31 +207,14 @@ unsafe fn read_msr(msr: u32) -> u64 {
 
 /// Set up the x86_64 SYSCALL/SYSRET fast-path entry point.
 ///
-/// This programs four MSRs:
-/// - **IA32_LSTAR**: the kernel entry point reached via `syscall`.
-/// - **IA32_STAR**: segment selectors for ring transitions.
-/// - **IA32_FMASK**: RFLAGS bits masked on entry (disables IF).
-/// - **IA32_EFER.SCE**: enables the `syscall`/`sysret` instructions.
-///
 /// # Safety
 ///
 /// Must be called exactly once with interrupts disabled.
-/// Modifies MSRs that control privilege-level transitions.
 pub unsafe fn setup_syscall_entry() {
-    // SAFETY: Called once with interrupts disabled during boot.
     unsafe {
-        // 1. Write the SYSCALL entry point address.
         write_msr(MSR_LSTAR, syscall_entry as *const () as u64);
-
-        // 2. Program segment selectors for ring 0 ↔ ring 3 transitions.
         write_msr(MSR_STAR, star_msr_value());
-
-        // 3. Mask IF (bit 9) on SYSCALL entry to prevent nested interrupts
-        //    until the kernel explicitly re-enables them.
         write_msr(MSR_FMASK, 0x200);
-
-        // 4. Enable the SYSCALL/SYSRET instructions via EFER.SCE (bit 0).
-        //    Read-modify-write to preserve other EFER bits.
         let efer = read_msr(MSR_EFER);
         write_msr(MSR_EFER, efer | EFER_SCE);
     }
@@ -147,144 +228,689 @@ pub unsafe fn setup_syscall_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall numbers — x86_64 Linux ABI
+// System call dispatch (async)
+//
+// Mirrors the ARM64 `handle_syscall` in `arch/arm64/exceptions/syscall.rs`.
+// Uses x86_64 Linux ABI syscall numbers.
+//
+// x86_64 Linux ABI:
+//   rax = syscall number
+//   rdi, rsi, rdx, r10, r8, r9 = arguments
+//   rax = return value (or negative errno)
 // ---------------------------------------------------------------------------
 
-/// System call numbers for x86_64 Linux ABI.
+/// Dispatch a system call from the `syscall` instruction.
 ///
-/// These match the x86_64 syscall table from Linux.
-pub mod numbers {
-    pub const SYS_READ: usize = 0;
-    pub const SYS_WRITE: usize = 1;
-    pub const SYS_OPEN: usize = 2;
-    pub const SYS_CLOSE: usize = 3;
-    pub const SYS_FSTAT: usize = 5;
-    pub const SYS_MMAP: usize = 9;
-    pub const SYS_MPROTECT: usize = 10;
-    pub const SYS_MUNMAP: usize = 11;
-    pub const SYS_BRK: usize = 12;
-    pub const SYS_IOCTL: usize = 16;
-    pub const SYS_SIGACTION: usize = 13;
-    pub const SYS_RT_SIGACTION: usize = 13;
-    pub const SYS_RT_SIGPROCMASK: usize = 14;
-    pub const SYS_CLONE: usize = 56;
-    pub const SYS_FORK: usize = 57;
-    pub const SYS_VFORK: usize = 58;
-    pub const SYS_EXECVE: usize = 59;
-    pub const SYS_EXIT: usize = 60;
-    pub const SYS_WAIT4: usize = 61;
-    pub const SYS_KILL: usize = 62;
-    pub const SYS_UNAME: usize = 63;
-    pub const SYS_FCNTL: usize = 72;
-    pub const SYS_GETPID: usize = 39;
-    pub const SYS_GETPPID: usize = 110;
-    pub const SYS_SOCKET: usize = 41;
-    pub const SYS_GETTIMEOFDAY: usize = 96;
-    pub const SYS_GETUID: usize = 102;
-    pub const SYS_GETGID: usize = 104;
-    pub const SYS_GETEUID: usize = 107;
-    pub const SYS_GETEGID: usize = 108;
-    pub const SYS_GETTID: usize = 186;
-    pub const SYS_SET_TID_ADDRESS: usize = 218;
-    pub const SYS_CLOCK_GETTIME: usize = 228;
-    pub const SYS_FUTEX: usize = 202;
-    pub const SYS_OPENAT: usize = 257;
-    pub const SYS_MKDIRAT: usize = 258;
-    pub const SYS_GETDENTS64: usize = 217;
-    pub const SYS_UNLINKAT: usize = 263;
-    pub const SYS_RENAMEAT: usize = 264;
-    pub const SYS_FCHMODAT: usize = 268;
-    pub const SYS_FCHOWNAT: usize = 260;
-    pub const SYS_READLINKAT: usize = 267;
-    pub const SYS_STATX: usize = 332;
-    pub const SYS_RSEQ: usize = 354;
-    pub const SYS_CLONE3: usize = 435;
-    pub const SYS_CLOSE_RANGE: usize = 436;
-    pub const SYS_FACCESSAT: usize = 269;
-    pub const SYS_PIPE2: usize = 293;
-    pub const SYS_DUP3: usize = 292;
-    pub const SYS_NANOSLEEP: usize = 35;
-    pub const SYS_EPOLL_CREATE1: usize = 291;
-    pub const SYS_EPOLL_CTL: usize = 233;
-    pub const SYS_EPOLL_WAIT: usize = 232;
-    pub const SYS_UNLINK: usize = 87;
-}
+/// Called via `spawn_kernel_work` from `x86_64_interrupt_handler` when
+/// `vector_num == SYSCALL`.  Reads the syscall number and arguments from
+/// the saved user register context (`X86_64PtraceGPRegs`), dispatches to
+/// the appropriate async implementation, and writes the result back to
+/// `rax` in the user context.
+pub async fn handle_syscall(mut ctx: ProcessCtx) {
+    ctx.task_mut().update_accounting(None);
+    ctx.task_mut().in_syscall = true;
+    ptrace_stop(&ctx, TracePoint::SyscallEntry).await;
 
-// ---------------------------------------------------------------------------
-// x86_64 Linux errno values (subset used by stub dispatch)
-// ---------------------------------------------------------------------------
+    // Extract syscall number and arguments from the saved user context.
+    // x86_64 Linux ABI: rax = syscall number,
+    //   rdi, rsi, rdx, r10, r8, r9 = arguments.
+    let (nr, arg1, arg2, arg3, arg4, arg5, arg6) = {
+        let state = ctx.task().ctx.user();
+        (
+            state.rax as u32,
+            state.rdi,
+            state.rsi,
+            state.rdx,
+            state.r10,
+            state.r8,
+            state.r9,
+        )
+    };
 
-/// ENOSYS — Function not implemented (x86_64 Linux value).
-const ENOSYS: isize = -38;
+    // x86_64 Linux syscall numbers — must match the kernel headers exactly.
+    //
+    // Reference: arch/x86/entry/syscalls/syscall_64.tbl
+    // Each number appears exactly once.
+    let res = match nr as usize {
+        // ── File I/O (Linux x86_64 numbers) ─────────────────────
+        0x00 => sys_read(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x01 => sys_write(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x02 => {
+            sys_openat(
+                &ctx,
+                (-100_i64 as u64).into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        } // open → openat(AT_FDCWD)
+        0x03 => sys_close(&ctx, arg1.into()).await,
+        0x05 => {
+            sys_newfstatat(
+                &ctx,
+                (-100_i64 as u64).into(),
+                TUA::from_value(arg1 as _),
+                TUA::from_value(arg2 as _),
+                0,
+            )
+            .await
+        } // stat → newfstatat(AT_FDCWD)
+        0x08 => sys_lseek(&ctx, arg1.into(), arg2 as _, arg3 as _).await,
+        0x10 => sys_ioctl(&ctx, arg1.into(), arg2 as _, arg3 as _).await,
+        0x11 => {
+            sys_pread64(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x12 => {
+            sys_pwrite64(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x13 => sys_readv(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x14 => sys_writev(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x15 => {
+            sys_preadv(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x16 => {
+            sys_pwritev(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x28 => {
+            sys_sendfile(
+                &ctx,
+                arg1.into(),
+                arg2.into(),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x48 => sys_fcntl(&ctx, arg1.into(), arg2 as _, arg3 as _).await,
+        0x4d => sys_ftruncate(&ctx, arg1.into(), arg3 as _).await,
+        0x4f => sys_getcwd(&ctx, TUA::from_value(arg1 as _), arg2 as _).await,
+        0x50 => sys_chdir(&ctx, TUA::from_value(arg1 as _)).await,
+        0x51 => sys_fchdir(&ctx, arg1.into()).await,
+        0x5b => sys_fchmod(&ctx, arg1.into(), arg3 as _).await,
+        0x5d => sys_fchown(&ctx, arg1.into(), arg3 as _, arg4 as _).await,
+        0x89 => sys_statfs(&ctx, TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+        0x8a => sys_fstatfs(&ctx, arg1.into(), TUA::from_value(arg2 as _)).await,
+        0xd9 => sys_getdents64(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x132 => sys_syncfs(&ctx, arg1.into()).await,
 
-// ---------------------------------------------------------------------------
-// Syscall dispatch
-// ---------------------------------------------------------------------------
+        // ── At-operations (openat=256, mkdirat=257, etc.) ────────
+        0x100 => {
+            sys_openat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x101 => sys_mkdirat(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x103 => {
+            sys_fchownat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                arg5 as _,
+            )
+            .await
+        }
+        0x104 => {
+            sys_newfstatat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x106 => sys_unlinkat(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x107 => {
+            sys_renameat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3.into(),
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+        0x108 => {
+            sys_linkat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3.into(),
+                TUA::from_value(arg4 as _),
+                arg5 as _,
+            )
+            .await
+        }
+        0x109 => {
+            sys_symlinkat(
+                &ctx,
+                TUA::from_value(arg1 as _),
+                arg2.into(),
+                TUA::from_value(arg3 as _),
+            )
+            .await
+        }
+        0x10a => {
+            sys_readlinkat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x10b => {
+            sys_fchmodat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x10c => sys_faccessat(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await,
+        0x10d => {
+            sys_faccessat2(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0x118 => {
+            sys_utimensat(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x13c => {
+            sys_renameat2(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3.into(),
+                TUA::from_value(arg4 as _),
+                arg5 as _,
+            )
+            .await
+        }
+        0x14c => {
+            sys_statx(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                TUA::from_value(arg5 as _),
+            )
+            .await
+        }
 
-/// Dispatch a syscall from the `syscall` instruction.
-///
-/// Called from `exception_dispatch` when `vector_num == SYSCALL (0x80)`.
-/// The x86_64 Linux ABI passes arguments as:
-///   - `rax` = syscall number
-///   - `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` = arguments
-///
-/// On return, `state.rax` holds the result (or negative errno on error).
-///
-/// This is a stub implementation that logs the syscall number and returns
-/// `ENOSYS`.  Individual syscalls will be implemented as part of later
-/// phases (process management, filesystem, etc.).
-pub fn syscall_dispatch(state: &mut ExceptionState) {
-    let nr = state.rax;
-    let arg1 = state.rdi;
-    let arg2 = state.rsi;
-    let arg3 = state.rdx;
-    let arg4 = state.r10;
-    let arg5 = state.r8;
-    let arg6 = state.r9;
+        // ── Memory management ───────────────────────────────────
+        0x09 => sys_mmap(&ctx, arg1, arg2, arg3, arg4, arg5.into(), arg6).await,
+        0x0a => sys_mprotect(&ctx, VA::from_value(arg1 as _), arg2 as _, arg3 as _),
+        0x0b => sys_munmap(&ctx, VA::from_value(arg1 as _), arg2 as _).await,
+        0x0c => sys_brk(&ctx, VA::from_value(arg1 as _))
+            .await
+            .map_err(|e| match e {}),
+        0x19 => {
+            sys_mremap(
+                &ctx,
+                VA::from_value(arg1 as _),
+                arg2 as _,
+                arg3 as _,
+                arg4,
+                VA::from_value(arg5 as _),
+            )
+            .await
+        }
+        0x1b => sys_mincore(&ctx, arg1, arg2 as _, TUA::from_value(arg3 as _)).await,
+        0x136 => {
+            sys_process_vm_readv(
+                arg1 as _,
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                TUA::from_value(arg4 as _),
+                arg5 as _,
+                arg6 as _,
+            )
+            .await
+        }
 
-    // Dispatch individual syscalls.
-    let result = match nr as usize {
-        numbers::SYS_EXIT => sys_exit(state),
-        numbers::SYS_WRITE => sys_write(arg1 as usize, arg2 as usize, arg3 as usize),
-        _ => {
-            // Trace unknown syscalls for development.
-            info!(
-                "syscall: unimplemented nr={} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x})",
-                nr, arg1, arg2, arg3, arg4, arg5, arg6,
+        // ── Scheduling ──────────────────────────────────────────
+        0x18 => sys_sched_yield(),
+        0xcb => sys_sched_setaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)),
+        0xcc => sys_sched_getaffinity(&ctx, arg1 as _, arg2 as _, TUA::from_value(arg3 as _)),
+
+        // ── Signal operations ───────────────────────────────────
+        0x0d => {
+            sys_rt_sigaction(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x0e => {
+            sys_rt_sigprocmask(
+                &mut ctx,
+                arg1 as _,
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x83 => sys_sigaltstack(&ctx, TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+        0x121 => {
+            sys_signalfd4(
+                &ctx,
+                arg1 as _,
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+            )
+            .await
+        }
+        0xc8 => sys_tkill(&ctx, arg1 as _, arg2.into()),
+
+        // ── I/O multiplexing ────────────────────────────────────
+        0x123 => sys_epoll_create1(&ctx, arg1 as _).await,
+        0xe8 => {
+            sys_epoll_ctl(
+                &ctx,
+                arg1.into(),
+                arg2 as _,
+                arg3.into(),
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+        0x119 => {
+            sys_epoll_pwait(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                TUA::from_value(arg5 as _),
+                arg6 as _,
+            )
+            .await
+        }
+        0x10e => {
+            sys_pselect6(
+                &ctx,
+                arg1 as _,
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg4 as _),
+                TUA::from_value(arg5 as _),
+                TUA::from_value(arg6 as _),
+            )
+            .await
+        }
+        0x10f => {
+            sys_ppoll(
+                &ctx,
+                TUA::from_value(arg1 as _),
+                arg2 as _,
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg4 as _),
+                arg5 as _,
+            )
+            .await
+        }
+
+        // ── Inotify ─────────────────────────────────────────────
+        0x126 => sys_inotify_init1(&ctx, arg1 as _).await,
+        0xfd => {
+            sys_inotify_add_watch(&ctx, arg1.into(), TUA::from_value(arg2 as _), arg3 as _).await
+        }
+        0xfe => sys_inotify_rm_watch(&ctx, arg1.into(), arg2 as i32).await,
+
+        // ── Process management ──────────────────────────────────
+        0x38 => {
+            sys_clone(
+                &ctx,
+                arg1 as _,
+                UA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg5 as _),
+                arg4 as _,
+            )
+            .await
+        }
+        0x3b => {
+            sys_execve(
+                &mut ctx,
+                TUA::from_value(arg1 as _),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+            )
+            .await
+        }
+
+        // ── Exit ────────────────────────────────────────────────
+        0x3c => {
+            let _ = sys_exit(&mut ctx, arg1 as _).await;
+            debug_assert!(
+                sched::current_work()
+                    .state
+                    .load(core::sync::atomic::Ordering::Acquire)
+                    == TaskState::Finished
             );
-            Err(-ENOSYS)
+            return;
+        }
+        0xe6 => {
+            let _ = sys_exit_group(&ctx, arg1 as _).await;
+            debug_assert!(
+                sched::current_work()
+                    .state
+                    .load(core::sync::atomic::Ordering::Acquire)
+                    == TaskState::Finished
+            );
+            return;
+        }
+
+        // ── Wait ────────────────────────────────────────────────
+        0x3d => {
+            sys_wait4(
+                &ctx,
+                arg1.cast_signed() as _,
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+        0xf7 => {
+            sys_waitid(
+                &ctx,
+                arg1 as _,
+                arg2 as _,
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+                TUA::from_value(arg5 as _),
+            )
+            .await
+        }
+
+        // ── Process credentials ─────────────────────────────────
+        0x27 => sys_getpid(&ctx).map_err(|e| match e {}),
+        0x6e => sys_getppid(&ctx).map_err(|e| match e {}),
+        0x66 => sys_getuid(&ctx).map_err(|e| match e {}),
+        0x6b => sys_geteuid(&ctx).map_err(|e| match e {}),
+        0x68 => sys_getgid(&ctx).map_err(|e| match e {}),
+        0x6c => sys_getegid(&ctx).map_err(|e| match e {}),
+        0xba => sys_gettid(&ctx).map_err(|e| match e {}),
+        0x79 => sys_getpgid(&ctx, arg1 as _),
+        0x6d => sys_setpgid(&ctx, arg1 as _, Pgid(arg2 as _)),
+        0x3e => sys_kill(&ctx, arg1 as _, arg2.into()),
+        0x69 => sys_setuid(&ctx, arg1 as _),
+        0x6a => sys_setgid(&ctx, arg1 as _),
+        0x71 => sys_setreuid(&ctx, arg1 as _, arg2 as _),
+        0x72 => sys_setregid(&ctx, arg1 as _, arg2 as _),
+        0x75 => sys_setresuid(&ctx, arg1 as _, arg2 as _, arg3 as _),
+        0x77 => sys_setresgid(&ctx, arg1 as _, arg2 as _, arg3 as _),
+        0x7a => sys_setfsuid(&ctx, arg1 as _).map_err(|e| match e {}),
+        0x7b => sys_setfsgid(&ctx, arg1 as _).map_err(|e| match e {}),
+        0x95 => sys_umask(&ctx, arg1 as _).map_err(|e| match e {}),
+
+        // ── Capabilities ────────────────────────────────────────
+        0x7d => sys_capget(&ctx, TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+        0x7e => sys_capset(&ctx, TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+
+        // ── Ptrace ──────────────────────────────────────────────
+        0x65 => {
+            sys_ptrace(
+                &ctx,
+                arg1 as _,
+                arg2 as _,
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+
+        // ── Time ────────────────────────────────────────────────
+        0x60 => sys_gettimeofday(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+        0xe2 => sys_clock_settime(arg1 as _, TUA::from_value(arg2 as _)).await,
+        0xe3 => sys_clock_gettime(&ctx, arg1 as _, TUA::from_value(arg2 as _)).await,
+        0xe5 => {
+            sys_clock_nanosleep(
+                arg1 as _,
+                arg2 as _,
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+        0x23 => sys_nanosleep(TUA::from_value(arg1 as _), TUA::from_value(arg2 as _)).await,
+        0x24 => sys_getitimer(&ctx, arg1 as _, TUA::from_value(arg2 as _)).await,
+        0x26 => {
+            sys_setitimer(
+                &ctx,
+                arg1 as _,
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+            )
+            .await
+        }
+
+        // ── Identity / hostname / info ──────────────────────────
+        0x3f => sys_uname(TUA::from_value(arg1 as _)).await,
+        0xaa => sys_sethostname(&ctx, TUA::from_value(arg1 as _), arg2 as _).await,
+        0x63 => sys_sysinfo(TUA::from_value(arg1 as _)).await,
+
+        // ── Resource limits ─────────────────────────────────────
+        0x12e => {
+            sys_prlimit64(
+                &ctx,
+                arg1 as _,
+                arg2 as _,
+                TUA::from_value(arg3 as _),
+                TUA::from_value(arg4 as _),
+            )
+            .await
+        }
+
+        // ── Prctl ───────────────────────────────────────────────
+        0x9d => sys_prctl(&ctx, arg1 as _, arg2, arg3).await,
+
+        // ── Reboot ──────────────────────────────────────────────
+        0xa9 => sys_reboot(&ctx, arg1 as _, arg2 as _, arg3 as _, arg4 as _).await,
+
+        // ── Network ─────────────────────────────────────────────
+        0x29 => sys_socket(&ctx, arg1 as _, arg2 as _, arg3 as _).await,
+        0x2a => sys_connect(&ctx, arg1.into(), UA::from_value(arg2 as _), arg3 as _).await,
+        0x2b => {
+            sys_accept(
+                &ctx,
+                arg1.into(),
+                UA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+            )
+            .await
+        }
+        0x2c => {
+            sys_sendto(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                UA::from_value(arg5 as _),
+                arg6 as _,
+            )
+            .await
+        }
+        0x2d => {
+            sys_recvfrom(
+                &ctx,
+                arg1.into(),
+                UA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                UA::from_value(arg5 as _),
+                TUA::from_value(arg6 as _),
+            )
+            .await
+        }
+        0x30 => sys_shutdown(&ctx, arg1.into(), arg2 as _).await,
+        0x31 => sys_bind(&ctx, arg1.into(), UA::from_value(arg2 as _), arg3 as _).await,
+        0x32 => sys_listen(&ctx, arg1.into(), arg2 as _).await,
+        0x120 => {
+            sys_accept4(
+                &ctx,
+                arg1.into(),
+                UA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+            )
+            .await
+        }
+
+        // ── Duplicate / pipe ────────────────────────────────────
+        0x20 => sys_dup(&ctx, arg1.into()),
+        0x124 => sys_dup3(&ctx, arg1.into(), arg2.into(), arg3 as _),
+        0x125 => sys_pipe2(&ctx, TUA::from_value(arg1 as _), arg2 as _).await,
+
+        // ── Random / memfd ──────────────────────────────────────
+        0x13e => sys_getrandom(TUA::from_value(arg1 as _), arg2 as _, arg3 as _).await,
+        0x13f => sys_memfd_create(&ctx, TUA::from_value(arg1 as _), arg2 as _).await,
+
+        // ── copy_file_range / preadv2 / pwritev2 ────────────────
+        0x146 => {
+            sys_copy_file_range(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3.into(),
+                TUA::from_value(arg4 as _),
+                arg5 as _,
+                arg6 as _,
+            )
+            .await
+        }
+        0x147 => {
+            sys_preadv2(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                arg5 as _,
+            )
+            .await
+        }
+        0x148 => {
+            sys_pwritev2(
+                &ctx,
+                arg1.into(),
+                TUA::from_value(arg2 as _),
+                arg3 as _,
+                arg4 as _,
+                arg5 as _,
+            )
+            .await
+        }
+
+        // ── close_range / pidfd ─────────────────────────────────
+        0x162 => sys_close_range(&ctx, arg1.into(), arg2.into(), arg3 as _).await,
+        0x16c => sys_pidfd_open(&ctx, arg1 as _, arg2 as _).await,
+
+        // ── mount / chroot ──────────────────────────────────────
+        0xa5 => {
+            sys_mount(
+                &ctx,
+                TUA::from_value(arg1 as _),
+                TUA::from_value(arg2 as _),
+                TUA::from_value(arg3 as _),
+                arg4 as _,
+                TUA::from_value(arg5 as _),
+            )
+            .await
+        }
+        0xa1 => sys_chroot(&ctx, TUA::from_value(arg1 as _)).await,
+
+        // ── futex / robust_list / tid_address ───────────────────
+        0xca => {
+            sys_futex(
+                &ctx,
+                TUA::from_value(arg1 as _),
+                arg2 as _,
+                arg3 as _,
+                TUA::from_value(arg4 as _),
+                TUA::from_value(arg5 as _),
+                arg6 as _,
+            )
+            .await
+        }
+        0x111 => sys_set_robust_list(&mut ctx, TUA::from_value(arg1 as _), arg2 as _).await,
+        0xda => sys_set_tid_address(&mut ctx, TUA::from_value(arg1 as _)),
+
+        _ => {
+            panic!(
+                "Unhandled syscall 0x{nr:x}, PC: 0x{:x}",
+                ctx.task().ctx.user().rip
+            );
         }
     };
 
-    // Store the return value in RAX per the x86_64 ABI.
-    state.rax = match result {
-        Ok(val) => val as u64,
-        Err(errno) => (errno as u64) & 0xFFFF_FFFF_FFFF_FFFF, // sign-extend for kernel errors
+    let ret_val = match res {
+        Ok(v) => v as isize,
+        Err(e) => kern_err_to_syscall(e),
     };
-}
 
-// ---------------------------------------------------------------------------
-// Individual syscall stubs
-// ---------------------------------------------------------------------------
-
-/// Exit the current task.
-///
-/// Mirrors the arm64 `sys_exit` stub: marks the state as finished so
-/// the scheduler can reclaim the task.
-fn sys_exit(state: &mut ExceptionState) -> Result<isize, isize> {
-    info!("sys_exit: code={}", state.rdi);
-    // TODO(#17): set TaskState::Finished, trigger reschedule.
-    // For now, loop forever so we don't return to a dead task.
-    loop {
-        unsafe {
-            asm!("hlt");
-        }
-    }
-}
-
-/// Write to a file descriptor (stub).
-fn sys_write(_fd: usize, _buf: usize, _count: usize) -> Result<isize, isize> {
-    info!("sys_write: fd={}, buf={:#x}, count={}", _fd, _buf, _count);
-    // TODO(#19): implement via filesystem layer.
-    Err(-ENOSYS)
+    ctx.task_mut().ctx.user_mut().rax = ret_val.cast_unsigned() as u64;
+    ptrace_stop(&ctx, TracePoint::SyscallExit).await;
+    ctx.task_mut().update_accounting(None);
+    ctx.task_mut().in_syscall = false;
 }

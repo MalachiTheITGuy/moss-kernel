@@ -33,13 +33,13 @@ use libkernel::memory::proc_vm::address_space::{KernAddressSpace, VirtualMemory}
 use crate::{
     arch::ArchImpl,
     drivers::{
+        Driver, DriverManager,
         init::PlatformBus,
         timer::{HwTimer, Instant},
-        Driver, DriverManager,
     },
     interrupts::{
-        get_interrupt_root, ClaimedInterrupt, InterruptConfig, InterruptDescriptor,
-        InterruptHandler, TriggerMode,
+        ClaimedInterrupt, InterruptConfig, InterruptDescriptor, InterruptHandler, TriggerMode,
+        get_interrupt_root,
     },
     kernel_driver,
 };
@@ -199,15 +199,20 @@ impl InterruptHandler for LapicTimer {
 ///    (the LAPIC's own [`InterruptManager`]).
 /// 4. Arms the LVT timer in periodic mode for the default tick.
 fn x86_64_lapic_timer_init(_bus: &mut PlatformBus, _dm: &mut DriverManager) -> Result<()> {
+    use crate::arch::x86_64::boot::boot_diag;
     // 1. Map the LAPIC MMIO page.
+    boot_diag(b'1'); // '1' = lapic_timer: entering
     let addr_spc = <ArchImpl as VirtualMemory>::kern_address_space();
+    boot_diag(b'2'); // '2' = got kern_address_space
     let mut kern_addr_spc = addr_spc.lock_save_irq();
+    boot_diag(b'3'); // '3' = locked addr_spc
     let virt_base = kern_addr_spc
         .map_mmio(PhysMemoryRegion::new(
             PA::from_value(LAPIC_BASE_PHYS as usize),
             LAPIC_MMIO_SIZE,
         ))
         .map_err(|_| KernelError::Other("Failed to map LAPIC timer MMIO"))?;
+    boot_diag(b'4'); // '4' = MMIO mapped
 
     // SAFETY: `virt_base` was returned by `map_mmio` for a region
     // of size `LAPIC_MMIO_SIZE` which is >= `size_of::<LapicTimerRegs>()`.
@@ -218,8 +223,10 @@ fn x86_64_lapic_timer_init(_bus: &mut PlatformBus, _dm: &mut DriverManager) -> R
     let frequency = DEFAULT_FREQUENCY;
 
     // 2. Get the interrupt root (the LAPIC's InterruptManager).
+    boot_diag(b'5'); // '5' = about to get interrupt_root
     let interrupt_root =
         get_interrupt_root().ok_or_else(|| KernelError::Other("LAPIC timer: no interrupt root"))?;
+    boot_diag(b'6'); // '6' = got interrupt_root
 
     // 3. Claim vector 0x40 via the interrupt manager.
     let _timer = interrupt_root.claim_interrupt(
@@ -246,10 +253,11 @@ fn x86_64_lapic_timer_init(_bus: &mut PlatformBus, _dm: &mut DriverManager) -> R
             }
         },
     )?;
+    boot_diag(b'7'); // '7' = interrupt claimed
 
     info!(
         "x86_64 LAPIC Timer initialized: vector 0x{:x}, freq {} Hz",
-        LAPIC_TIMER_VECTOR, frequency,
+        LAPIC_TIMER_VECTOR, frequency
     );
 
     Ok(())

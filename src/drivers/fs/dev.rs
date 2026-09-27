@@ -18,6 +18,7 @@ use libkernel::{
 };
 use log::warn;
 
+#[repr(C)]
 pub struct DevFs {
     root: Arc<DevFsINode>,
     next_inode_id: AtomicU64,
@@ -102,7 +103,7 @@ impl Filesystem for DevFs {
     }
 
     fn magic(&self) -> u64 {
-        // TODO: Is this the right value
+        // TODO: Is this the right magic number
         0x01021994 // TMPFS_MAGIC
     }
 }

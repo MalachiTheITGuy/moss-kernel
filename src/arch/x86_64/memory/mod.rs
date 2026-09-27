@@ -16,15 +16,15 @@ pub fn translate_kernel_va(va: VA) -> Option<PA> {
 
 /// Look up the physical address of a kernel linker symbol.
 ///
+/// On x86_64 the kernel is linked at `PHYS_BASE` (0x100000), so symbol
+/// addresses in the ELF are already physical addresses — no page-table
+/// translation is needed.
+///
 /// Usage: `let pa = ksym_pa!(__vdso_start);`
 #[macro_export]
 macro_rules! ksym_pa {
     ($sym:expr) => {{
-        let v = libkernel::memory::address::VA::from_value(
-            core::ptr::addr_of!($sym) as usize,
-        );
-        $crate::arch::x86_64::memory::translate_kernel_va(v)
-            .expect("ksym_pa: translate failed")
+        libkernel::memory::address::PA::from_value(core::ptr::addr_of!($sym) as usize)
     }};
 }
 

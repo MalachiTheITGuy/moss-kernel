@@ -81,8 +81,26 @@ impl UserAddressSpace for X86_64ProcessAddressSpace {
         )
     }
 
-    fn unmap(&mut self, _va: VA) -> Result<PageFrame> {
-        todo!()
+    fn unmap(&mut self, va: VA) -> Result<PageFrame> {
+        let mut walk_ctx = WalkContext {
+            mapper: &mut PageOffsetPgTableMapper {},
+            invalidator: &AllTlbInvalidator::new(),
+        };
+        let mut claimed_page = None;
+
+        walk_and_modify_region(
+            self.pml4_table,
+            va.page_region(),
+            &mut walk_ctx,
+            |_, desc| {
+                if let Some(addr) = desc.mapped_address() {
+                    claimed_page = Some(addr.to_pfn());
+                }
+                PTE::invalid()
+            },
+        )?;
+
+        claimed_page.ok_or(KernelError::MappingError(MapError::NotL3Mapped))
     }
 
     fn protect_range(&mut self, va_range: VirtMemoryRegion, perms: PtePermissions) -> Result<()> {
