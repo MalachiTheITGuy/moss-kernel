@@ -32,14 +32,24 @@ impl<A: CpuOps, G: PageAllocGetter<A>, T: AddressTranslator<()>> ClaimedPage<A, 
     /// Allocates a single physical page. The contents of the page are
     /// undefined.
     fn alloc() -> Result<Self> {
+        // Diagnostic: about to call alloc_frames (marker 'x')
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'x', options(nostack)); }
         let frame = G::global_page_alloc().alloc_frames(0)?;
+        // Diagnostic: alloc_frames returned (marker 'y')
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'y', options(nostack)); }
         Ok(Self(frame, PhantomData, PhantomData))
     }
 
     /// Allocates a single physical page and zeroes its contents.
     pub fn alloc_zeroed() -> Result<Self> {
+        // Diagnostic: about to call alloc (marker 'u')
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'u', options(nostack)); }
         let mut page = Self::alloc()?;
+        // Diagnostic: alloc returned, about to fill (marker 'v')
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'v', options(nostack)); }
         page.as_slice_mut().fill(0);
+        // Diagnostic: fill done (marker 'w')
+        unsafe { core::arch::asm!("out dx, al", in("dx") 0xE9u16, in("al") b'w', options(nostack)); }
         Ok(page)
     }
 

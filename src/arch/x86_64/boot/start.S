@@ -270,11 +270,11 @@ _start:
     orl     $PTE_RW_P, %eax
     movl    %eax, 0x5000(%esi)           /* PDPT_dm entry 0             */
 
-    /* -- PD_dm: direct-map 512 MiB (256 × 2 MiB entries) -- */
+    /* -- PD_dm: direct-map 1 GiB (512 × 2 MiB entries) -- */
     movl    $(0x03 | 0x80), %ecx        /* ECX = PSE_LARGE_PTE          */
     movl    $(__init_pages_start + 0x6000), %edi
     movl    $0x00000000, %eax            /* first 2 MiB base             */
-    movl    $256, %edx                   /* 256 entries = 512 MiB        */
+    movl    $512, %edx                   /* 512 entries = 1024 MiB       */
 .Lfill_pd_dm:
     movl    %eax, %ebx
     orl     %ecx, %ebx                  /* PSE_LARGE_PTE                */

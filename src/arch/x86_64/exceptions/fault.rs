@@ -36,36 +36,60 @@ mod pfec {
 }
 
 /// Decode a page-fault error code into human-readable flags.
-fn format_pf_error_code(ec: u64) -> alloc::string::String {
+///
+/// Uses a fixed-size stack buffer to avoid heap allocation — exception
+/// handlers must never allocate because the heap may not be initialized
+/// yet when a fault fires during early boot.
+fn format_pf_error_code(ec: u64, buf: &mut [u8; 64]) -> &str {
     use core::fmt::Write;
 
-    let mut buf = alloc::string::String::new();
+    // Create a wrapper that writes into the fixed buffer
+    struct BufWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+
+    impl<'a> Write for BufWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - self.pos;
+            let n = core::cmp::min(bytes.len(), remaining);
+            self.buf[self.pos..self.pos + n].copy_from_slice(&bytes[..n]);
+            self.pos += n;
+            Ok(())
+        }
+    }
+
+    let mut w = BufWriter { buf, pos: 0 };
 
     if ec & pfec::NOT_PRESENT != 0 {
-        let _ = write!(&mut buf, "PRESENT ");
+        let _ = write!(&mut w, "NOT_PRESENT ");
     }
     if ec & pfec::WRITE != 0 {
-        let _ = write!(&mut buf, "WRITE ");
+        let _ = write!(&mut w, "WRITE ");
     }
     if ec & pfec::USER != 0 {
-        let _ = write!(&mut buf, "USER ");
+        let _ = write!(&mut w, "USER ");
     }
     if ec & pfec::RESERVED != 0 {
-        let _ = write!(&mut buf, "RESERVED ");
+        let _ = write!(&mut w, "RESERVED ");
     }
     if ec & pfec::INSTRUCTION_FETCH != 0 {
-        let _ = write!(&mut buf, "EXEC ");
+        let _ = write!(&mut w, "EXEC ");
     }
     if ec & pfec::PROTECTION_KEY != 0 {
-        let _ = write!(&mut buf, "PK ");
+        let _ = write!(&mut w, "PK ");
     }
     if ec & pfec::SHADOW_STACK != 0 {
-        let _ = write!(&mut buf, "SHADOW_STACK ");
+        let _ = write!(&mut w, "SHADOW_STACK ");
     }
-    if buf.is_empty() {
-        let _ = write!(&mut buf, "UNKNOWN");
+    if w.pos == 0 {
+        let _ = write!(&mut w, "UNKNOWN");
     }
-    buf
+    let len = w.pos;
+    core::mem::drop(w);
+    // Convert to &str — safe because we only wrote valid UTF-8 (ASCII)
+    core::str::from_utf8(&buf[..len]).unwrap_or("UNKNOWN")
 }
 
 /// Read the faulting linear address from CR2.
@@ -91,7 +115,8 @@ unsafe fn read_cr2() -> u64 {
 pub fn handle_page_fault(state: &ExceptionState) {
     let cr2 = unsafe { read_cr2() };
     let ec = state.error_code;
-    let access = format_pf_error_code(ec);
+    let mut pf_buf = [0u8; 64];
+    let access = format_pf_error_code(ec, &mut pf_buf);
 
     let user = (ec & pfec::USER) != 0;
     let level = if user { "user" } else { "kernel" };
