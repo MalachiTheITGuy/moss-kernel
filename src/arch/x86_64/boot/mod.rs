@@ -31,6 +31,7 @@ use libkernel::error::Result;
 use libkernel::memory::address::{PA, TPA};
 use libkernel::memory::allocators::slab::allocator::SlabAllocator;
 use libkernel::memory::region::PhysMemoryRegion;
+use libkernel::sync::per_cpu::setup_percpu;
 
 // ── Early boot debug diagnostics ──────────────────────
 // Write a byte to QEMU debug port 0xe9 AND COM1 (0x3F8).
@@ -1180,6 +1181,11 @@ unsafe extern "C" fn arch_init_stage2() {
     //   exceptions_init → enable_interrupts → run_initcalls → kmain
     unsafe { run_initcalls() };
     boot_diag(b'e'); // 'e' — initcalls done
+
+    // Initialize per-CPU variables (mirrors ARM64 flow).
+    // Must happen before kmain since sched_init() accesses per-CPU data.
+    unsafe { setup_percpu(1) }; // x86_64: single CPU for now
+    boot_diag(b'P'); // 'P' — per_cpu initialized
 
     // Reconstruct the command line from BSS statics populated by stage1.
     let args = unsafe {

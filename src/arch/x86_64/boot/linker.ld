@@ -96,6 +96,26 @@ SECTIONS
     .data : ALIGN(4096) { *(.data .data.*) }
     __data_end = .;
 
+    /*
+     * Per-CPU variable descriptors — placed before .bss so the linker
+     * keeps them in the same LOAD segment as .data (no 16 MiB BSS gap).
+     */
+    .percpu : ALIGN(8) {
+        __percpu_start = .;
+        KEEP(*(.percpu))
+        __percpu_end = .;
+    }
+
+    /*
+     * Idle thread code pages — MUST be before .bss (NOBITS) to avoid
+     * inflating the flat binary with the BSS gap.
+     */
+    .idle : ALIGN(4096) {
+        __idle_start = .;
+        *(.idle)
+        __idle_end = .;
+    }
+
     .bss : ALIGN(4096) {
         . = ALIGN(16);
         __bss_start = .;
@@ -124,17 +144,6 @@ SECTIONS
     __boot_stack_top = .;
     . += 32768;                 /* 32 KiB */
     __boot_stack = .;
-
-    /*
-     * Idle thread code pages.  The idle entry points (__idle_start,
-     * __idle_end) are defined in idle.s and referenced by idle.rs
-     * and vmarea.rs.
-     */
-    .idle : ALIGN(4096) {
-        __idle_start = .;
-        *(.idle)
-        __idle_end = .;
-    }
 
     __image_end = .;
 }
